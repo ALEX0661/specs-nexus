@@ -5,6 +5,7 @@ aptPkgs = ["python3-pip", "python3-venv"]
 cmds = [
   "python -m venv /opt/venv-app",
   ". /opt/venv-app/bin/activate && pip install --upgrade pip",
+  ". /opt/venv-app/bin/activate && pip install sentence-transformers==2.2.0",
   ". /opt/venv-app/bin/activate && pip install -r requirements.txt"
 ]
 
