@@ -1,21 +1,20 @@
-import os
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+import os
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
-# Get DATABASE_URL from environment variables
-DATABASE_URL = os.getenv("DATABASE_URL", "mysql+pymysql://specs_nexus_user:cybercats@localhost/specs_nexus_db")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Create engine with SSL settings for production
-is_production = os.getenv("ENVIRONMENT") == "production"
-if is_production:
-    engine = create_engine(DATABASE_URL, pool_recycle=300)
-else:
-    engine = create_engine(DATABASE_URL)
-
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
