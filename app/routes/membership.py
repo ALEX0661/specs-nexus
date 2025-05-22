@@ -12,6 +12,7 @@ from botocore.client import Config
 
 from app.database import SessionLocal
 from app import models, schemas
+from app.auth_utils import get_current_user
 
 logger = logging.getLogger("app.membership")
 
@@ -105,23 +106,23 @@ async def upload_to_r2(file: UploadFile, object_key: str):
 # QR Code Endpoints
 
 @router.get("/qrcode", response_model=dict)
-def get_qrcode(payment_type: str, db: Session = Depends(get_db)):
-    logger.debug(f"Fetching QR code for payment type: {payment_type}")
+def get_qrcode(payment_type: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    logger.debug(f"User {current_user.id} ({current_user.full_name}) fetching QR code for payment type: {payment_type}")
     if payment_type not in ["gcash", "paymaya"]:
-        logger.error(f"Invalid payment type: {payment_type}")
+        logger.error(f"User {current_user.id} provided invalid payment type: {payment_type}")
         raise HTTPException(status_code=400, detail="Payment type must be 'gcash' or 'paymaya'")
     
     qr_record = db.query(models.QRCode).first()
     if not qr_record:
-        logger.error("No QR code record found")
+        logger.error(f"No QR code record found for user {current_user.id}")
         raise HTTPException(status_code=404, detail="No QR code record found")
     
     url = qr_record.gcash if payment_type == "gcash" else qr_record.paymaya
     if not url:
-        logger.error(f"No QR code uploaded for payment type: {payment_type}")
+        logger.error(f"No QR code uploaded for payment type {payment_type} for user {current_user.id}")
         raise HTTPException(status_code=404, detail=f"No QR code uploaded for {payment_type}")
     
-    logger.info(f"Fetched QR code URL: {url}")
+    logger.info(f"User {current_user.id} fetched QR code URL: {url}")
     return {"qr_code_url": url}
 
 @router.post("/officer/upload_qrcode", response_model=dict)
@@ -168,29 +169,27 @@ async def upload_officer_qrcode(
 @router.get("/memberships/{user_id}", response_model=List[schemas.MembershipSchema])
 def get_memberships(
     user_id: int, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
-    logger.debug(f"Fetching memberships for user_id: {user_id}")
+    logger.debug(f"User {current_user.id} ({current_user.full_name}) fetching memberships for user_id: {user_id}")
+    if current_user.id != user_id:
+        logger.error(f"User {current_user.id} attempted to access memberships for user_id: {user_id}")
+        raise HTTPException(status_code=403, detail="Not authorized to access this user's memberships")
     memberships = db.query(models.Clearance)\
         .options(joinedload(models.Clearance.user))\
         .filter(models.Clearance.user_id == user_id, models.Clearance.archived == False)\
         .all()
-    logger.info(f"Fetched {len(memberships)} membership records for user_id: {user_id}")
+    logger.info(f"User {current_user.id} fetched {len(memberships)} membership records for user_id: {user_id}")
     return memberships
 
 @router.post("/upload_receipt_file", response_model=dict)
 async def upload_receipt_file(
-    user_id: int = Form(...),
     file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
-    logger.debug(f"Uploading a receipt file for user_id: {user_id}")
-    # Verify user exists
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not user:
-        logger.error(f"User with ID {user_id} not found")
-        raise HTTPException(status_code=404, detail="User not found")
-    
+    logger.debug(f"User {current_user.id} ({current_user.full_name}) uploading a receipt file")
     # Generate a unique filename to prevent collisions
     unique_filename = f"{uuid.uuid4().hex}_{file.filename}"
     object_key = f"receipts/{unique_filename}"
@@ -200,10 +199,10 @@ async def upload_receipt_file(
     except HTTPException as e:
         raise e
     except Exception as e:
-        logger.error(f"Error uploading receipt file to R2 for user_id {user_id}: {str(e)}")
+        logger.error(f"Error uploading receipt file to R2 for user {current_user.id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Error uploading receipt file")
     
-    logger.info(f"Uploaded receipt file to R2 for user_id {user_id}: {file_url}")
+    logger.info(f"User {current_user.id} uploaded receipt file to R2: {file_url}")
     return {"file_path": file_url}
 
 class UpdateReceiptPayload(BaseModel):
@@ -213,29 +212,23 @@ class UpdateReceiptPayload(BaseModel):
 
 @router.put("/update_receipt", response_model=schemas.MembershipSchema)
 def update_receipt(
-    user_id: int,
     payload: UpdateReceiptPayload, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
-    logger.debug(f"Updating receipt for membership_id: {payload.membership_id} for user_id: {user_id}")
-    # Verify user exists
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not user:
-        logger.error(f"User with ID {user_id} not found")
-        raise HTTPException(status_code=404, detail="User not found")
-    
+    logger.debug(f"User {current_user.id} ({current_user.full_name}) updating receipt for membership_id: {payload.membership_id}")
     payment_type = payload.payment_type.lower().strip()
     if payment_type not in ["gcash", "paymaya"]:
-        logger.error(f"Invalid payment_type: {payment_type} for user_id: {user_id}")
+        logger.error(f"User {current_user.id} provided invalid payment_type: {payment_type}")
         raise HTTPException(status_code=400, detail="Invalid payment_type")
     
     membership = db.query(models.Clearance)\
                    .filter(models.Clearance.id == payload.membership_id,
-                           models.Clearance.user_id == user_id,
+                           models.Clearance.user_id == current_user.id,
                            models.Clearance.archived == False)\
                    .first()
     if not membership:
-        logger.error(f"Membership record not found for id: {payload.membership_id} for user_id: {user_id}")
+        logger.error(f"Membership record not found for id: {payload.membership_id} for user {current_user.id}")
         raise HTTPException(status_code=404, detail="Membership not found")
     
     membership.receipt_path = payload.receipt_path
@@ -246,7 +239,7 @@ def update_receipt(
 
     db.commit()
     db.refresh(membership)
-    logger.info(f"Updated receipt for membership_id: {payload.membership_id} for user_id: {user_id}")
+    logger.info(f"User {current_user.id} updated receipt for membership_id: {payload.membership_id}")
     return membership
 
 # Officer Endpoints (Membership Management)
