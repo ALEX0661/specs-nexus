@@ -1,19 +1,20 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from sqlalchemy.orm import Session
 from datetime import datetime
+import os
 from typing import List, Optional
 import boto3
 from botocore.client import Config
-import os
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app import models, schemas
-from app.auth_utils import get_current_user, get_current_officer
 
-logger = logging.getLogger("app.announcements")
+logger = logging.getLogger("app.events")
 
-router = APIRouter(prefix="/announcements", tags=["Announcements"])
+router = APIRouter(prefix="/events", tags=["Events"])
 
 def get_db():
     db = SessionLocal()
@@ -37,7 +38,7 @@ logger.debug(f"CLOUDFLARE_R2_ENDPOINT: {endpoint_url}")
 # Verify that bucket_name is not None before proceeding
 if not bucket_name:
     logger.error("CLOUDFLARE_R2_BUCKET environment variable is not set")
-    bucket_name = "specs-nexus-files"  # Fallback to hardcoded value as seen in your .env
+    bucket_name = "specs-nexus-files"  # Fallback to hardcoded value
 
 s3 = boto3.client(
     's3',
@@ -45,7 +46,7 @@ s3 = boto3.client(
     aws_access_key_id=access_key_id,
     aws_secret_access_key=secret_access_key,
     config=Config(signature_version='s3v4'),
-    region_name='auto'  # Changed from 'apac' to 'auto'
+    region_name='auto'
 )
 
 # Make the upload_to_r2 function async
@@ -83,7 +84,6 @@ async def upload_to_r2(file: UploadFile, object_key: str):
         s3.upload_fileobj(file.file, bucket_name, object_key)
         
         # Use the worker URL for the uploaded file
-        # Make sure the URL doesn't have double slashes
         if worker_url.endswith('/'):
             file_url = f"{worker_url}{object_key}"
         else:
@@ -96,107 +96,215 @@ async def upload_to_r2(file: UploadFile, object_key: str):
         logger.error(f"Error uploading file to R2: {str(e)}")
         raise
 
-# Endpoint: GET /announcements/
-# Description: Returns a list of non-archived announcements for a logged-in user.
-@router.get("/", response_model=List[schemas.AnnouncementSchema])
-def get_announcements(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+# Endpoint: GET /events/
+# Description: Returns a list of all active (non-archived) events.
+@router.get("/", response_model=List[schemas.EventSchema])
+def get_events(db: Session = Depends(get_db)):
+    logger.debug("Fetching all active events")
+    events = db.query(models.Event).filter(models.Event.archived == False).all()
+    logger.info(f"Fetched {len(events)} events")
+    return events
+
+@router.post("/join/{event_id}", response_model=schemas.MessageResponse)
+def join_event(
+    event_id: int,
+    user_id: int = Form(...),
+    db: Session = Depends(get_db)
 ):
-    logger.debug(f"User {current_user.id} ({current_user.full_name}) fetching non-archived announcements")
-    announcements = db.query(models.Announcement).filter(models.Announcement.archived == False).all()
-    logger.info(f"User {current_user.id} fetched {len(announcements)} announcements")
-    return announcements
+    logger.debug(f"Attempting to join event {event_id} for user_id: {user_id}")
+    event = db.query(models.Event).filter(models.Event.id == event_id).first()
+    if not event:
+        logger.error(f"Event {event_id} not found")
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Verify user exists
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        logger.error(f"User with ID {user_id} not found")
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Check if event registration is open
+    now = datetime.utcnow()
+    if event.registration_start and now < event.registration_start:
+        logger.error(f"Registration for event {event_id} has not started yet")
+        raise HTTPException(status_code=403, detail="Registration for this event has not started yet")
+    
+    if event.registration_end and now > event.registration_end:
+        logger.error(f"Registration for event {event_id} has ended")
+        raise HTTPException(status_code=403, detail="Registration for this event has ended")
+    
+    user_in_session = db.merge(user)
+    if any(u.id == user_in_session.id for u in event.participants):
+        logger.info(f"User {user_in_session.id} already participating in event {event_id}")
+        return {"message": "Already participating in this event"}
+    event.participants.append(user_in_session)
+    db.commit()
+    logger.info(f"User {user_in_session.id} joined event {event_id}")
+    return {"message": "Successfully joined the event"}
 
-# Officer Endpoints for Announcements
+# Endpoint: POST /events/leave/{event_id}
+# Description: Allows a user to leave an event by event_id.
+@router.post("/leave/{event_id}", response_model=schemas.MessageResponse)
+def leave_event(
+    event_id: int,
+    user_id: int = Form(...),
+    db: Session = Depends(get_db)
+):
+    logger.debug(f"Attempting to leave event {event_id} for user_id: {user_id}")
+    event = db.query(models.Event).filter(models.Event.id == event_id).first()
+    if not event:
+        logger.error(f"Event {event_id} not found")
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Verify user exists
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        logger.error(f"User with ID {user_id} not found")
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Check if event registration is still open for leaving
+    now = datetime.utcnow()
+    if event.registration_end and now > event.registration_end:
+        logger.error(f"Registration for event {event_id} has ended, cannot leave")
+        raise HTTPException(status_code=403, detail="Registration for this event has ended, cannot leave now")
+    
+    user_in_event = next((u for u in event.participants if u.id == user_id), None)
+    if not user_in_event:
+        logger.info(f"User {user_id} is not participating in event {event_id}")
+        return {"message": "You are not participating in this event"}
+    event.participants.remove(user_in_event)
+    db.commit()
+    logger.info(f"User {user_id} left event {event_id}")
+    return {"message": "Successfully left the event"}
 
-# Endpoint: POST /announcements/officer/create
-# Description: Allows an officer to create a new announcement. An image can be optionally uploaded to R2.
-@router.post("/officer/create", response_model=schemas.AnnouncementSchema)
-async def admin_create_announcement(
+# Officer Endpoints (Manage Events)
+
+# Endpoint: GET /events/officer/list
+# Description: Fetches a list of all active (non-archived) events.
+@router.get("/officer/list", response_model=List[schemas.EventSchema])
+def admin_list_events(
+    db: Session = Depends(get_db)
+):
+    logger.debug("Fetching all active events")
+    events = db.query(models.Event).filter(models.Event.archived == False).all()
+    logger.info(f"Fetched {len(events)} events")
+    return events
+
+# Endpoint: POST /events/officer/create
+# Description: Creates a new event. An image can be optionally uploaded to R2.
+@router.post("/officer/create", response_model=schemas.EventSchema)
+async def admin_create_event(
     title: str = Form(...),
     description: str = Form(...),
     date: datetime = Form(...),
     location: str = Form(""),
+    registration_start: Optional[datetime] = Form(None),
+    registration_end: Optional[datetime] = Form(None),
     image: UploadFile = File(None),
-    db: Session = Depends(get_db),
-    current_officer: models.Officer = Depends(get_current_officer)
+    db: Session = Depends(get_db)
 ):
-    logger.debug(f"Officer {current_officer.id} ({current_officer.full_name}) creating announcement with title: {title}")
+    logger.debug(f"Creating event with title: {title}")
     
     image_url = None
     if image and image.filename:
         # Only attempt upload if there's actually a file
         # Generate a unique filename to prevent collisions
-        import uuid
         filename = f"{uuid.uuid4()}-{image.filename}"
-        object_key = f"announcement_images/{filename}"
+        object_key = f"event_images/{filename}"
         image_url = await upload_to_r2(image, object_key)
+        logger.debug(f"Uploaded event image to R2: {image_url}")
     
-    new_announcement = models.Announcement(
+    # Set default registration_start if not provided
+    if not registration_start:
+        registration_start = datetime.utcnow()
+    
+    new_event = models.Event(
         title=title,
         description=description,
         date=date,
-        location=location,
         image_url=image_url,
-        archived=False
+        location=location,
+        registration_start=registration_start,
+        registration_end=registration_end
     )
-    db.add(new_announcement)
+    db.add(new_event)
     db.commit()
-    db.refresh(new_announcement)
-    logger.info(f"Officer {current_officer.id} created announcement successfully with id: {new_announcement.id}")
-    return new_announcement
+    db.refresh(new_event)
+    logger.info(f"Created event successfully with id: {new_event.id}")
+    return new_event
 
-# Endpoint: PUT /announcements/officer/update/{announcement_id}
-# Description: Allows an officer to update an existing announcement, including its image in R2.
-@router.put("/officer/update/{announcement_id}", response_model=schemas.AnnouncementSchema)
-async def admin_update_announcement(
-    announcement_id: int,
+# Endpoint: PUT /events/officer/update/{event_id}
+# Description: Updates an existing event, including its image in R2.
+@router.put("/officer/update/{event_id}", response_model=schemas.EventSchema)
+async def admin_update_event(
+    event_id: int,
     title: str = Form(...),
     description: str = Form(...),
     date: datetime = Form(...),
     location: str = Form(""),
+    registration_start: Optional[datetime] = Form(None),
+    registration_end: Optional[datetime] = Form(None),
     image: UploadFile = File(None),
-    db: Session = Depends(get_db),
-    current_officer: models.Officer = Depends(get_current_officer)
+    db: Session = Depends(get_db)
 ):
-    logger.debug(f"Officer {current_officer.id} updating announcement id: {announcement_id}")
-    announcement = db.query(models.Announcement).filter(models.Announcement.id == announcement_id).first()
-    if not announcement:
-        logger.error(f"Announcement {announcement_id} not found for update")
-        raise HTTPException(status_code=404, detail="Announcement not found")
+    logger.debug(f"Updating event id: {event_id}")
+    event = db.query(models.Event).filter(models.Event.id == event_id).first()
+    if not event:
+        logger.error(f"Event {event_id} not found for update")
+        raise HTTPException(status_code=404, detail="Event not found")
     
     if image and image.filename:
         # Only attempt upload if there's actually a file
         # Generate a unique filename to prevent collisions
-        import uuid
         filename = f"{uuid.uuid4()}-{image.filename}"
-        object_key = f"announcement_images/{filename}"
-        announcement.image_url = await upload_to_r2(image, object_key)
+        object_key = f"event_images/{filename}"
+        event.image_url = await upload_to_r2(image, object_key)
+        logger.debug(f"Updated event image in R2: {event.image_url}")
     
-    announcement.title = title
-    announcement.description = description
-    announcement.date = date
-    announcement.location = location
+    event.title = title
+    event.description = description
+    event.date = date
+    event.location = location
+    
+    # Update registration dates if provided
+    if registration_start:
+        event.registration_start = registration_start
+    if registration_end:
+        event.registration_end = registration_end
+        
     db.commit()
-    db.refresh(announcement)
-    logger.info(f"Announcement {announcement_id} updated successfully by Officer {current_officer.id}")
-    return announcement
+    db.refresh(event)
+    logger.info(f"Updated event {event_id} successfully")
+    return event
 
-# Endpoint: DELETE /announcements/officer/delete/{announcement_id}
-# Description: Allows an officer to archive (delete) an announcement.
-@router.delete("/officer/delete/{announcement_id}", response_model=dict)
-def admin_delete_announcement(
-    announcement_id: int,
-    db: Session = Depends(get_db),
-    current_officer: models.Officer = Depends(get_current_officer)
+# Endpoint: DELETE /events/officer/delete/{event_id}
+# Description: Archives an event.
+@router.delete("/officer/delete/{event_id}", response_model=dict)
+def admin_delete_event(
+    event_id: int,
+    db: Session = Depends(get_db)
 ):
-    logger.debug(f"Officer {current_officer.id} attempting to archive announcement id: {announcement_id}")
-    announcement = db.query(models.Announcement).filter(models.Announcement.id == announcement_id).first()
-    if not announcement:
-        logger.error(f"Announcement {announcement_id} not found for deletion")
-        raise HTTPException(status_code=404, detail="Announcement not found")
-    announcement.archived = True
+    logger.debug(f"Attempting to archive event id: {event_id}")
+    event = db.query(models.Event).filter(models.Event.id == event_id).first()
+    if not event:
+        logger.error(f"Event {event_id} not found for deletion")
+        raise HTTPException(status_code=404, detail="Event not found")
+    event.archived = True
     db.commit()
-    logger.info(f"Announcement {announcement_id} archived successfully by Officer {current_officer.id}")
-    return {"detail": "Announcement archived successfully"}
+    logger.info(f"Archived event {event_id} successfully")
+    return {"detail": "Event archived successfully"}
+
+# Endpoint: GET /events/{event_id}/participants
+# Description: Returns a list of users participating in the specified event.
+@router.get("/{event_id}/participants", response_model=List[schemas.User])
+def get_event_participants(
+    event_id: int,
+    db: Session = Depends(get_db)
+):
+    logger.debug(f"Fetching participants for event id: {event_id}")
+    event = db.query(models.Event).filter(models.Event.id == event_id, models.Event.archived == False).first()
+    if not event:
+        logger.error(f"Event {event_id} not found for fetching participants")
+        raise HTTPException(status_code=404, detail="Event not found")
+    logger.info(f"Fetched {len(event.participants)} participants for event id: {event_id}")
+    return event.participants
