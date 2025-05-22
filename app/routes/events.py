@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app import models, schemas
-from app.auth_utils import get_current_user, get_current_officer
 
 logger = logging.getLogger("app.events")
 
@@ -100,29 +99,29 @@ async def upload_to_r2(file: UploadFile, object_key: str):
 # Endpoint: GET /events/
 # Description: Returns a list of all active (non-archived) events.
 @router.get("/", response_model=List[schemas.EventSchema])
-def get_events(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+def get_events(db: Session = Depends(get_db)):
     logger.debug("Fetching all active events")
     events = db.query(models.Event).filter(models.Event.archived == False).all()
-    
-    # Add is_participant flag to each event
-    for event in events:
-        # Check if current user is participating in this event
-        event.is_participant = any(participant.id == current_user.id for participant in event.participants)
-        
     logger.info(f"Fetched {len(events)} events")
     return events
 
 @router.post("/join/{event_id}", response_model=schemas.MessageResponse)
 def join_event(
     event_id: int,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    user_id: int = Form(...),
+    db: Session = Depends(get_db)
 ):
-    logger.debug(f"User {current_user.id} ({current_user.full_name}) attempting to join event {event_id}")
+    logger.debug(f"Attempting to join event {event_id} for user_id: {user_id}")
     event = db.query(models.Event).filter(models.Event.id == event_id).first()
     if not event:
         logger.error(f"Event {event_id} not found")
         raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Verify user exists
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        logger.error(f"User with ID {user_id} not found")
+        raise HTTPException(status_code=404, detail="User not found")
     
     # Check if event registration is open
     now = datetime.utcnow()
@@ -134,8 +133,8 @@ def join_event(
         logger.error(f"Registration for event {event_id} has ended")
         raise HTTPException(status_code=403, detail="Registration for this event has ended")
     
-    user_in_session = db.merge(current_user)
-    if any(user.id == user_in_session.id for user in event.participants):
+    user_in_session = db.merge(user)
+    if any(u.id == user_in_session.id for u in event.participants):
         logger.info(f"User {user_in_session.id} already participating in event {event_id}")
         return {"message": "Already participating in this event"}
     event.participants.append(user_in_session)
@@ -148,14 +147,20 @@ def join_event(
 @router.post("/leave/{event_id}", response_model=schemas.MessageResponse)
 def leave_event(
     event_id: int,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    user_id: int = Form(...),
+    db: Session = Depends(get_db)
 ):
-    logger.debug(f"User {current_user.id} ({current_user.full_name}) attempting to leave event {event_id}")
+    logger.debug(f"Attempting to leave event {event_id} for user_id: {user_id}")
     event = db.query(models.Event).filter(models.Event.id == event_id).first()
     if not event:
         logger.error(f"Event {event_id} not found")
         raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Verify user exists
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        logger.error(f"User with ID {user_id} not found")
+        raise HTTPException(status_code=404, detail="User not found")
     
     # Check if event registration is still open for leaving
     now = datetime.utcnow()
@@ -163,31 +168,30 @@ def leave_event(
         logger.error(f"Registration for event {event_id} has ended, cannot leave")
         raise HTTPException(status_code=403, detail="Registration for this event has ended, cannot leave now")
     
-    user_in_event = next((user for user in event.participants if user.id == current_user.id), None)
+    user_in_event = next((u for u in event.participants if u.id == user_id), None)
     if not user_in_event:
-        logger.info(f"User {current_user.id} is not participating in event {event_id}")
+        logger.info(f"User {user_id} is not participating in event {event_id}")
         return {"message": "You are not participating in this event"}
     event.participants.remove(user_in_event)
     db.commit()
-    logger.info(f"User {current_user.id} left event {event_id}")
+    logger.info(f"User {user_id} left event {event_id}")
     return {"message": "Successfully left the event"}
 
 # Officer Endpoints (Manage Events)
 
 # Endpoint: GET /events/officer/list
-# Description: Allows an officer to fetch a list of all active (non-archived) events.
+# Description: Fetches a list of all active (non-archived) events.
 @router.get("/officer/list", response_model=List[schemas.EventSchema])
 def admin_list_events(
-    db: Session = Depends(get_db),
-    current_officer: models.Officer = Depends(get_current_officer)
+    db: Session = Depends(get_db)
 ):
-    logger.debug(f"Officer {current_officer.id} ({current_officer.full_name}) fetching all active events")
+    logger.debug("Fetching all active events")
     events = db.query(models.Event).filter(models.Event.archived == False).all()
-    logger.info(f"Officer {current_officer.id} fetched {len(events)} events")
+    logger.info(f"Fetched {len(events)} events")
     return events
 
 # Endpoint: POST /events/officer/create
-# Description: Allows an officer to create a new event. An image can be optionally uploaded to R2.
+# Description: Creates a new event. An image can be optionally uploaded to R2.
 @router.post("/officer/create", response_model=schemas.EventSchema)
 async def admin_create_event(
     title: str = Form(...),
@@ -197,10 +201,9 @@ async def admin_create_event(
     registration_start: Optional[datetime] = Form(None),
     registration_end: Optional[datetime] = Form(None),
     image: UploadFile = File(None),
-    db: Session = Depends(get_db),
-    current_officer: models.Officer = Depends(get_current_officer)
+    db: Session = Depends(get_db)
 ):
-    logger.debug(f"Officer {current_officer.id} ({current_officer.full_name}) creating event with title: {title}")
+    logger.debug(f"Creating event with title: {title}")
     
     image_url = None
     if image and image.filename:
@@ -227,11 +230,11 @@ async def admin_create_event(
     db.add(new_event)
     db.commit()
     db.refresh(new_event)
-    logger.info(f"Officer {current_officer.id} created event successfully with id: {new_event.id}")
+    logger.info(f"Created event successfully with id: {new_event.id}")
     return new_event
 
 # Endpoint: PUT /events/officer/update/{event_id}
-# Description: Allows an officer to update an existing event, including its image in R2.
+# Description: Updates an existing event, including its image in R2.
 @router.put("/officer/update/{event_id}", response_model=schemas.EventSchema)
 async def admin_update_event(
     event_id: int,
@@ -242,10 +245,9 @@ async def admin_update_event(
     registration_start: Optional[datetime] = Form(None),
     registration_end: Optional[datetime] = Form(None),
     image: UploadFile = File(None),
-    db: Session = Depends(get_db),
-    current_officer: models.Officer = Depends(get_current_officer)
+    db: Session = Depends(get_db)
 ):
-    logger.debug(f"Officer {current_officer.id} updating event id: {event_id}")
+    logger.debug(f"Updating event id: {event_id}")
     event = db.query(models.Event).filter(models.Event.id == event_id).first()
     if not event:
         logger.error(f"Event {event_id} not found for update")
@@ -272,25 +274,24 @@ async def admin_update_event(
         
     db.commit()
     db.refresh(event)
-    logger.info(f"Officer {current_officer.id} updated event {event_id} successfully")
+    logger.info(f"Updated event {event_id} successfully")
     return event
 
 # Endpoint: DELETE /events/officer/delete/{event_id}
-# Description: Allows an officer to archive an event.
+# Description: Archives an event.
 @router.delete("/officer/delete/{event_id}", response_model=dict)
 def admin_delete_event(
     event_id: int,
-    db: Session = Depends(get_db),
-    current_officer: models.Officer = Depends(get_current_officer)
+    db: Session = Depends(get_db)
 ):
-    logger.debug(f"Officer {current_officer.id} attempting to archive event id: {event_id}")
+    logger.debug(f"Attempting to archive event id: {event_id}")
     event = db.query(models.Event).filter(models.Event.id == event_id).first()
     if not event:
         logger.error(f"Event {event_id} not found for deletion")
         raise HTTPException(status_code=404, detail="Event not found")
     event.archived = True
     db.commit()
-    logger.info(f"Officer {current_officer.id} archived event {event_id} successfully")
+    logger.info(f"Archived event {event_id} successfully")
     return {"detail": "Event archived successfully"}
 
 # Endpoint: GET /events/{event_id}/participants
