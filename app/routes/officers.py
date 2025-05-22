@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app import models, schemas
-from app.auth_utils import admin_required, create_access_token
+from app.auth_utils import create_access_token
 
 logger = logging.getLogger("app.officers")
 
@@ -46,41 +46,32 @@ def officer_login(officer: schemas.OfficerLoginSchema, db: Session = Depends(get
     }
 
 # Endpoint: GET /officers/
-# Description: Returns a list of all officers for a logged-in officer.
+# Description: Returns a list of all officers. No authorization required.
 @router.get("/", response_model=List[schemas.OfficerSchema])
-def get_officers(db: Session = Depends(get_db), current_officer: models.Officer = Depends(admin_required)):
-    logger.debug(f"get_officers called by Officer {current_officer.id} ({current_officer.full_name})")
+def get_officers(db: Session = Depends(get_db)):
+    logger.debug("Fetching all officers")
     officers = db.query(models.Officer).all()
-    logger.info(f"Officer {current_officer.id} fetched {len(officers)} officers")
-    return officers
-
-# Endpoint: GET /officers/ (Admin)
-# Description: Allows an admin to fetch all officers.
-@router.get("/", response_model=List[schemas.OfficerSchema], dependencies=[Depends(admin_required)])
-def get_officers_admin(db: Session = Depends(get_db)):
-    logger.debug("Admin fetching all officers")
-    officers = db.query(models.Officer).all()
-    logger.info(f"Admin fetched {len(officers)} officers")
+    logger.info(f"Fetched {len(officers)} officers")
     return officers
 
 # Endpoint: GET /officers/users
-# Description: Allows an admin to fetch all users for adding as officers.
-@router.get("/users", response_model=List[schemas.User], dependencies=[Depends(admin_required)])
+# Description: Fetches all users for adding as officers. No authorization required.
+@router.get("/users", response_model=List[schemas.User])
 def get_users_for_officers(db: Session = Depends(get_db)):
-    logger.debug("Admin fetching all users for officer creation")
+    logger.debug("Fetching all users for officer creation")
     users = db.query(models.User).all()
-    logger.info(f"Admin fetched {len(users)} users")
+    logger.info(f"Fetched {len(users)} users")
     return users
 
 # Endpoint: POST /officers/bulk
-# Description: Allows an admin to create multiple officer accounts from selected user IDs.
-@router.post("/bulk", response_model=List[schemas.OfficerSchema], dependencies=[Depends(admin_required)])
+# Description: Creates multiple officer accounts from selected user IDs. No authorization required.
+@router.post("/bulk", response_model=List[schemas.OfficerSchema])
 def create_officers_bulk(
     user_ids: List[int] = Form(...),
     position: str = Form(...),
     db: Session = Depends(get_db)
 ):
-    logger.debug(f"Admin creating officers from user IDs: {user_ids}")
+    logger.debug(f"Creating officers from user IDs: {user_ids}")
     created_officers = []
     for user_id in user_ids:
         user = db.query(models.User).filter(models.User.id == user_id).first()
@@ -112,8 +103,8 @@ def create_officers_bulk(
     return created_officers
 
 # Endpoint: POST /officers/
-# Description: Allows an admin to create a new officer account.
-@router.post("/", response_model=schemas.OfficerSchema, dependencies=[Depends(admin_required)])
+# Description: Creates a new officer account. No authorization required.
+@router.post("/", response_model=schemas.OfficerSchema)
 def create_officer(
     full_name: str = Form(...),
     email: str = Form(...),
@@ -124,7 +115,7 @@ def create_officer(
     position: str = Form(...),
     db: Session = Depends(get_db)
 ):
-    logger.debug(f"Admin creating officer with email: {email}")
+    logger.debug(f"Creating officer with email: {email}")
     existing = db.query(models.Officer).filter(
         (models.Officer.email == email) | (models.Officer.student_number == student_number)
     ).first()
@@ -149,8 +140,8 @@ def create_officer(
     return officer
 
 # Endpoint: PUT /officers/{officer_id}
-# Description: Allows an admin to update an existing officer's details.
-@router.put("/{officer_id}", response_model=schemas.OfficerSchema, dependencies=[Depends(admin_required)])
+# Description: Updates an existing officer's details. No authorization required.
+@router.put("/{officer_id}", response_model=schemas.OfficerSchema)
 def update_officer(
     officer_id: int,
     full_name: str = Form(...),
@@ -160,10 +151,9 @@ def update_officer(
     year: str = Form(...),
     block: str = Form(...),
     position: str = Form(...),
-    db: Session = Depends(get_db),
-    current_officer: models.Officer = Depends(admin_required)
+    db: Session = Depends(get_db)
 ):
-    logger.debug(f"Officer {current_officer.id} ({current_officer.full_name}) updating officer id: {officer_id}")
+    logger.debug(f"Updating officer id: {officer_id}")
     officer = db.query(models.Officer).filter(models.Officer.id == officer_id).first()
     if not officer:
         logger.error("Officer not found for update")
@@ -177,20 +167,19 @@ def update_officer(
     officer.position = position
     db.commit()
     db.refresh(officer)
-    logger.info(f"Officer {officer_id} updated successfully by Officer {current_officer.id}")
+    logger.info(f"Officer {officer_id} updated successfully")
     return officer
 
 # Endpoint: DELETE /officers/{officer_id}
-# Description: Permanently deletes an officer account.
-@router.delete("/{officer_id}", response_model=dict, dependencies=[Depends(admin_required)])
-def delete_officer(officer_id: int, db: Session = Depends(get_db), current_officer: models.Officer = Depends(admin_required)):
-    logger.debug(f"Officer {current_officer.id} ({current_officer.full_name}) deleting officer id: {officer_id}")
+# Description: Permanently deletes an officer account. No authorization required.
+@router.delete("/{officer_id}", response_model=dict)
+def delete_officer(officer_id: int, db: Session = Depends(get_db)):
+    logger.debug(f"Deleting officer id: {officer_id}")
     officer = db.query(models.Officer).filter(models.Officer.id == officer_id).first()
     if not officer:
         logger.error("Officer not found for deletion")
         raise HTTPException(status_code=404, detail="Officer not found")
     db.delete(officer)
     db.commit()
-    logger.info(f"Officer {officer_id} deleted successfully by Officer {current_officer.id}")
+    logger.info(f"Officer {officer_id} deleted successfully")
     return {"detail": "Officer deleted successfully"}
-
