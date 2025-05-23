@@ -45,6 +45,7 @@ def get_db():
 class DateRangeFilter(BaseModel):
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
+    include_archived: Optional[bool] = False  # New parameter to include archived records
 
 @router.get("/dashboard", response_model=dict)
 def get_dashboard_data(date_filter: Optional[DateRangeFilter] = None, db: Session = Depends(get_db)) -> Dict[str, Any]:
@@ -53,8 +54,9 @@ def get_dashboard_data(date_filter: Optional[DateRangeFilter] = None, db: Sessio
     try:
         # Apply date range filter if provided
         date_filter = date_filter or DateRangeFilter()
-        start_date = date_filter.start_date or (datetime.now() - timedelta(days=365))
+        start_date = date_filter.start_date or (datetime.now() - timedelta(days=365 * 2))  # Extended to 2 years
         end_date = date_filter.end_date or datetime.now()
+        include_archived = date_filter.include_archived or False
 
         # Validate date range
         if start_date > end_date:
@@ -232,9 +234,16 @@ def get_dashboard_data(date_filter: Optional[DateRangeFilter] = None, db: Sessio
         ).filter(
             models.Clearance.archived == False,
             models.Clearance.payment_method.isnot(None),
-            models.Clearance.payment_date >= start_date,
-            models.Clearance.payment_date <= end_date
+            or_(
+                and_(
+                    models.Clearance.payment_status == "Paid",
+                    models.Clearance.payment_date >= start_date,
+                    models.Clearance.payment_date <= end_date
+                ),
+                models.Clearance.payment_status.in_(["Not Paid", "Verifying"])
+            )
         ).group_by(models.Clearance.payment_method).all()
+        logger.debug(f"Raw payment methods query result: {payment_methods}")
         preferred_payment_methods = [{"method": method, "count": count, "firstSemCount": 0, "secondSemCount": 0} for method, count in payment_methods]
 
         payment_method_trends = db.query(
@@ -244,9 +253,16 @@ def get_dashboard_data(date_filter: Optional[DateRangeFilter] = None, db: Sessio
         ).filter(
             models.Clearance.archived == False,
             models.Clearance.payment_method.isnot(None),
-            models.Clearance.payment_date >= start_date,
-            models.Clearance.payment_date <= end_date
+            or_(
+                and_(
+                    models.Clearance.payment_status == "Paid",
+                    models.Clearance.payment_date >= start_date,
+                    models.Clearance.payment_date <= end_date
+                ),
+                models.Clearance.payment_status.in_(["Not Paid", "Verifying"])
+            )
         ).group_by(models.Clearance.payment_method, models.Clearance.requirement).all()
+        logger.debug(f"Raw payment method trends query result: {payment_method_trends}")
         payment_method_trends_dict = {}
         for method, requirement, count in payment_method_trends:
             if method not in payment_method_trends_dict:
@@ -301,19 +317,24 @@ def get_dashboard_data(date_filter: Optional[DateRangeFilter] = None, db: Sessio
         logger.debug(f"Payment details by requirement and year: {byRequirementAndYear}")
 
         # Event details and participation rates
-        events = db.query(models.Event).filter(
-            models.Event.archived == False,
-            models.Event.date >= start_date,
-            models.Event.date <= end_date
-        ).all()
+        events_query = db.query(models.Event).filter(
+            models.Event.archived == include_archived,  # Use include_archived parameter
+            or_(
+                models.Event.date >= start_date,
+                models.Event.date <= end_date,
+                models.Event.date.is_(None)  # Include NULL dates
+            )
+        )
+        events = events_query.all()
+        logger.debug(f"Raw events query result: {[(e.title, e.date, e.participant_count, e.archived) for e in events]}")
         events_engagement = []
         events_by_year = {}
         for event in events:
             event_year = event.date.year if event.date else "Unknown"
             engagement = {
                 "title": event.title,
-                "participant_count": event.participant_count,
-                "participation_rate": round((event.participant_count / total_specs_members) * 100, 2) if total_specs_members > 0 else 0
+                "participant_count": event.participant_count or 0,
+                "participation_rate": round((event.participant_count / total_specs_members) * 100, 2) if total_specs_members > 0 and event.participant_count else 0
             }
             events_engagement.append(engagement)
             if event_year not in events_by_year:
@@ -321,6 +342,7 @@ def get_dashboard_data(date_filter: Optional[DateRangeFilter] = None, db: Sessio
             events_by_year[event_year].append(engagement)
         popular_events = sorted(events_engagement, key=lambda x: x["participant_count"], reverse=True)[:5]
         logger.debug(f"Event engagement: {events_engagement}")
+        logger.debug(f"Popular events: {popular_events}")
 
         # Clearance by requirement
         clearance_by_requirement_raw = db.query(
