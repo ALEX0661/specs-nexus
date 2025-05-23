@@ -175,13 +175,15 @@ def leave_event(
 
 # Endpoint: GET /events/officer/list
 # Description: Fetches a list of all active (non-archived) events.
+# Modified Endpoint: GET /events/officer/list
 @router.get("/officer/list", response_model=List[schemas.EventSchema])
 def admin_list_events(
+    archived: bool = False,
     db: Session = Depends(get_db)
 ):
-    logger.debug("Fetching all active events")
-    events = db.query(models.Event).filter(models.Event.archived == False).all()
-    logger.info(f"Fetched {len(events)} events")
+    logger.debug(f"Fetching events with archived={archived}")
+    events = db.query(models.Event).filter(models.Event.archived == archived).all()
+    logger.info(f"Fetched {len(events)} events with archived={archived}")
     return events
 
 # Endpoint: POST /events/officer/create
@@ -296,7 +298,7 @@ def get_event_participants(
     db: Session = Depends(get_db)
 ):
     logger.debug(f"Fetching participants for event id: {event_id}")
-    event = db.query(models.Event).filter(models.Event.id == event_id, models.Event.archived == False).first()
+    event = db.query(models.Event).filter(models.Event.id == event_id).first()
     if not event:
         logger.error(f"Event {event_id} not found for fetching participants")
         raise HTTPException(status_code=404, detail="Event not found")
