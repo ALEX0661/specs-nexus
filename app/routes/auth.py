@@ -71,6 +71,10 @@ def update_user_profile(
 ):
     logger.debug(f"Updating profile for user {current_user.id} ({current_user.full_name})")
     
+    # Merge the current_user into the current session
+    current_user = db.merge(current_user)
+    logger.debug(f"Merged user {current_user.id} into current session")
+    
     # Update only the fields provided in the request
     if update_data.full_name is not None:
         current_user.full_name = update_data.full_name
