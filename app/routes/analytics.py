@@ -2,8 +2,9 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, or_, and_
+from sqlalchemy import func, or_, and_, text
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import ProgrammingError, OperationalError
 from pydantic import BaseModel
 
 from app.database import SessionLocal
@@ -16,7 +17,28 @@ router = APIRouter(prefix="/analytics", tags=["Analytics"])
 def get_db():
     db = SessionLocal()
     try:
+        # Test database connection
+        db.execute(text("SELECT 1"))
+        logger.debug("Database connection successful")
+        # Check if users table exists (MySQL-compatible)
+        result = db.execute(
+            text("""
+                SELECT COUNT(*) 
+                FROM information_schema.tables 
+                WHERE table_name = 'users'
+            """)
+        ).scalar()
+        if not result:
+            logger.error("Users table does not exist in the database")
+            raise HTTPException(status_code=500, detail="Users table not found in the database")
+        logger.debug("Users table exists")
         yield db
+    except (ProgrammingError, OperationalError) as e:
+        logger.error(f"Database error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error in get_db: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         db.close()
 
@@ -38,9 +60,18 @@ def get_dashboard_data(date_filter: Optional[DateRangeFilter] = None, db: Sessio
         if start_date > end_date:
             raise HTTPException(status_code=400, detail="Start date must be before end date")
 
-        # Total CS Students (all users in the system)
-        total_cs_students = db.query(models.User).count()
-        logger.debug(f"Total CS students: {total_cs_students}")
+        # Total BSCS Students (all users in the system)
+        try:
+            total_cs_students = db.query(models.User).count()
+            logger.debug(f"Total BSCS students: {total_cs_students}")
+        except ProgrammingError as e:
+            logger.error(f"Error querying users table: {str(e)}")
+            total_cs_students = 0
+            raise HTTPException(status_code=500, detail=f"Error querying users table: {str(e)}")
+
+        no_users = total_cs_students == 0
+        if no_users:
+            logger.warning("No users found in the users table")
 
         # Total Specs Members (distinct users with payment_status="Paid" within the date range)
         total_specs_members_query = db.query(models.Clearance.user_id).filter(
@@ -109,28 +140,24 @@ def get_dashboard_data(date_filter: Optional[DateRangeFilter] = None, db: Sessio
         thirty_days_ago = datetime.now() - timedelta(days=30)
         seven_days_ago = datetime.now() - timedelta(days=7)
         
-        active_members_query = db.query(models.User.id).join(
-            models.Clearance, models.Clearance.user_id == models.User.id
-        ).filter(
-            models.Clearance.archived == False,
-            models.Clearance.payment_status == "Paid",
-            models.User.last_active >= thirty_days_ago,
-            models.Clearance.payment_date >= start_date,
-            models.Clearance.payment_date <= end_date
-        )
-        active_members = active_members_query.distinct().count()
-        
-        recent_activity = db.query(models.User.id).join(
-            models.Clearance, models.Clearance.user_id == models.User.id
-        ).filter(
-            models.Clearance.archived == False,
-            models.Clearance.payment_status == "Paid",
-            models.User.last_active >= seven_days_ago,
-            models.Clearance.payment_date >= start_date,
-            models.Clearance.payment_date <= end_date
-        ).distinct().count()
-        inactive_members = total_specs_members - active_members
-        logger.debug(f"Active members: {active_members}, Inactive members: {inactive_members}, Recent activity (7 days): {recent_activity}")
+        try:
+            active_members = db.query(models.User).filter(
+                models.User.last_active >= thirty_days_ago,
+                models.User.last_active.isnot(None)
+            ).count()
+            
+            recent_activity = db.query(models.User).filter(
+                models.User.last_active >= seven_days_ago,
+                models.User.last_active.isnot(None)
+            ).count()
+            
+            inactive_members = total_cs_students - active_members
+            logger.debug(f"Active members: {active_members}, Inactive members: {inactive_members}, Recent activity (7 days): {recent_activity}")
+        except ProgrammingError as e:
+            logger.error(f"Error querying active/inactive members: {str(e)}")
+            active_members = 0
+            inactive_members = total_cs_students
+            recent_activity = 0
 
         # Payment status counts (overall and semester-specific)
         not_paid_count = db.query(models.Clearance).filter(
@@ -232,7 +259,6 @@ def get_dashboard_data(date_filter: Optional[DateRangeFilter] = None, db: Sessio
             {"method": method, "firstSemCount": data["firstSemCount"], "secondSemCount": data["secondSemCount"]}
             for method, data in payment_method_trends_dict.items()
         ]
-        # Update preferred_payment_methods with semester-specific counts
         for method in preferred_payment_methods:
             for trend in payment_method_trends_list:
                 if trend["method"] == method["method"]:
@@ -335,7 +361,7 @@ def get_dashboard_data(date_filter: Optional[DateRangeFilter] = None, db: Sessio
         logger.info("Dashboard data aggregated successfully")
         return {
             "membershipInsights": {
-                "totalCSStudents": total_cs_students,
+                "totalBSCSStudents": total_cs_students,
                 "totalSpecsMembers": total_specs_members,
                 "totalSpecsMembersFirstSem": total_specs_members_first_sem,
                 "totalSpecsMembersSecondSem": total_specs_members_second_sem,
@@ -345,7 +371,8 @@ def get_dashboard_data(date_filter: Optional[DateRangeFilter] = None, db: Sessio
                 "activeMembers": active_members,
                 "inactiveMembers": inactive_members,
                 "recentActivityLast7Days": recent_activity,
-                "membersByRequirement": members_by_requirement
+                "membersByRequirement": members_by_requirement,
+                "noUsers": no_users
             },
             "paymentAnalytics": {
                 "byRequirementAndYear": byRequirementAndYear,
@@ -372,6 +399,8 @@ def get_dashboard_data(date_filter: Optional[DateRangeFilter] = None, db: Sessio
             }
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error aggregating dashboard data: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error while aggregating dashboard data")
+        raise HTTPException(status_code=500, detail=f"Internal server error while aggregating dashboard data: {str(e)}")

@@ -71,24 +71,27 @@ def update_user_profile(
 ):
     logger.debug(f"Updating profile for user {current_user.id} ({current_user.full_name})")
     
-    # Merge the current_user into the current session
-    current_user = db.merge(current_user)
-    logger.debug(f"Merged user {current_user.id} into current session")
+    # Re-query the user in the current session to ensure persistence
+    user = db.query(models.User).filter(models.User.id == current_user.id).first()
+    if not user:
+        logger.error(f"User {current_user.id} not found in database")
+        raise HTTPException(status_code=404, detail="User not found")
+    logger.debug(f"Re-queried user {user.id} in current session")
     
     # Update only the fields provided in the request
     if update_data.full_name is not None:
-        current_user.full_name = update_data.full_name
+        user.full_name = update_data.full_name
     if update_data.year is not None:
-        current_user.year = update_data.year
+        user.year = update_data.year
     if update_data.block is not None:
-        current_user.block = update_data.block
+        user.block = update_data.block
     
     try:
         db.commit()
-        db.refresh(current_user)
-        logger.info(f"Profile updated for user {current_user.id} ({current_user.full_name})")
-        return current_user
+        db.refresh(user)
+        logger.info(f"Profile updated for user {user.id} ({user.full_name})")
+        return user
     except Exception as e:
-        logger.error(f"Failed to update profile for user {current_user.id}: {str(e)}")
+        logger.error(f"Failed to update profile for user {user.id}: {str(e)}")
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to update profile")

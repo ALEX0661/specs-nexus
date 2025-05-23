@@ -36,6 +36,7 @@ class User(BaseModel):
     full_name: Optional[str] = None
     year: Optional[str] = None
     block: Optional[str] = None
+    last_active: Optional[datetime] = None  # Added
     participated_events: Optional[List["EventSchema"]] = None
 
     class Config:
