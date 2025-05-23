@@ -60,3 +60,31 @@ def login(user_login: schemas.UserLogin, db: Session = Depends(get_db)):
 def read_user_profile(current_user: models.User = Depends(get_current_user)):
     logger.debug(f"Fetching profile for user {current_user.id} ({current_user.full_name})")
     return current_user
+
+# Endpoint: PUT /auth/profile
+# Description: Updates the profile of the currently authenticated user.
+@router.put("/profile", response_model=schemas.User)
+def update_user_profile(
+    update_data: schemas.UpdateUser,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    logger.debug(f"Updating profile for user {current_user.id} ({current_user.full_name})")
+    
+    # Update only the fields provided in the request
+    if update_data.full_name is not None:
+        current_user.full_name = update_data.full_name
+    if update_data.year is not None:
+        current_user.year = update_data.year
+    if update_data.block is not None:
+        current_user.block = update_data.block
+    
+    try:
+        db.commit()
+        db.refresh(current_user)
+        logger.info(f"Profile updated for user {current_user.id} ({current_user.full_name})")
+        return current_user
+    except Exception as e:
+        logger.error(f"Failed to update profile for user {current_user.id}: {str(e)}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to update profile")

@@ -1,6 +1,8 @@
 import logging
 import os
 import uuid
+import re
+from urllib.parse import unquote
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Body
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
@@ -50,6 +52,50 @@ s3 = boto3.client(
     config=Config(signature_version='s3v4'),
     region_name='auto'
 )
+
+def sanitize_filename(filename: str) -> str:
+    """
+    Sanitize filename to make it safe for URLs and file systems.
+    Removes spaces and other problematic characters.
+    """
+    if not filename:
+        return "unnamed_file"
+    
+    # First decode any URL encoding
+    try:
+        filename = unquote(filename)
+    except:
+        pass
+    
+    # Extract the file extension
+    if '.' in filename:
+        name, ext = filename.rsplit('.', 1)
+        ext = f".{ext}"
+    else:
+        name, ext = filename, ""
+    
+    # Remove spaces first
+    name = name.replace(' ', '')
+    
+    # Remove or replace other problematic characters
+    # Keep only alphanumeric, hyphens, and underscores
+    name = re.sub(r'[^a-zA-Z0-9\-_]', '_', name)
+    
+    # Remove multiple consecutive underscores
+    name = re.sub(r'_{2,}', '_', name)
+    
+    # Remove leading/trailing underscores
+    name = name.strip('_')
+    
+    # Ensure the name isn't empty
+    if not name:
+        name = "file"
+    
+    # Limit the length to prevent issues
+    if len(name) > 50:
+        name = name[:50]
+    
+    return f"{name}{ext}".lower()
 
 # Make the upload_to_r2 function async
 async def upload_to_r2(file: UploadFile, object_key: str):
@@ -136,10 +182,10 @@ async def upload_officer_qrcode(
         logger.error(f"Invalid payment type: {payment_type}")
         raise HTTPException(status_code=400, detail="Payment type must be 'gcash' or 'paymaya'")
     
-    # Generate a unique filename to prevent collisions
-    original_filename = file.filename.replace("\\", "/").split("/")[-1]
-    safe_filename = f"{uuid.uuid4().hex}_{original_filename}"
-    object_key = f"qrcodes/{safe_filename}"
+    # Generate a safe filename
+    sanitized_filename = sanitize_filename(file.filename)
+    unique_filename = f"{uuid.uuid4().hex}_{sanitized_filename}"
+    object_key = f"qrcodes/{unique_filename}"
     
     try:
         file_url = await upload_to_r2(file, object_key)
@@ -190,9 +236,15 @@ async def upload_receipt_file(
     current_user: models.User = Depends(get_current_user)
 ):
     logger.debug(f"User {current_user.id} ({current_user.full_name}) uploading a receipt file")
-    # Generate a unique filename to prevent collisions
-    unique_filename = f"{uuid.uuid4().hex}_{file.filename}"
+    
+    # Generate a safe filename
+    sanitized_filename = sanitize_filename(file.filename)
+    unique_filename = f"{uuid.uuid4().hex}_{sanitized_filename}"
     object_key = f"receipts/{unique_filename}"
+    
+    logger.info(f"Original filename: {file.filename}")
+    logger.info(f"Sanitized filename: {sanitized_filename}")
+    logger.info(f"Object key: {object_key}")
     
     try:
         file_url = await upload_to_r2(file, object_key)
@@ -410,3 +462,37 @@ def create_officer_requirement(
     else:
         logger.error(f"Membership requirement '{requirement}' already exists for all users")
         raise HTTPException(status_code=400, detail="Requirement already exists for all users")
+
+@router.get("/receipt/{membership_id}", response_model=dict)
+def get_membership_receipt(
+    membership_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Get receipt details for a specific membership"""
+    logger.debug(f"User {current_user.id} ({current_user.full_name}) fetching receipt for membership_id: {membership_id}")
+    
+    membership = db.query(models.Clearance)\
+        .filter(
+            models.Clearance.id == membership_id,
+            models.Clearance.user_id == current_user.id,
+            models.Clearance.archived == False
+        )\
+        .first()
+    
+    if not membership:
+        logger.error(f"Membership record not found for id: {membership_id} for user {current_user.id}")
+        raise HTTPException(status_code=404, detail="Membership not found")
+    
+    if not membership.receipt_path:
+        logger.error(f"No receipt found for membership_id: {membership_id}")
+        raise HTTPException(status_code=404, detail="No receipt found for this membership")
+    
+    logger.info(f"User {current_user.id} fetched receipt for membership_id: {membership_id}")
+    return {
+        "receipt_url": membership.receipt_path,
+        "payment_method": membership.payment_method,
+        "payment_status": membership.payment_status,
+        "payment_date": membership.payment_date,
+        "approval_date": membership.approval_date
+    }

@@ -21,6 +21,14 @@ class UserInfo(BaseModel):
     class Config:
         orm_mode = True
 
+class UpdateUser(BaseModel):
+    full_name: Optional[str] = None
+    year: Optional[str] = None
+    block: Optional[str] = None
+
+    class Config:
+        orm_mode = True
+
 class User(BaseModel):
     id: int
     email: str
