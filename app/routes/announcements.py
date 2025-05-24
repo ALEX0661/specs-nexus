@@ -49,19 +49,15 @@ s3 = boto3.client(
     region_name='auto'
 )
 
-# Make the upload_to_r2 function async
 async def upload_to_r2(file: UploadFile, object_key: str):
     try:
-        # Get credentials from environment variables
         access_key = os.getenv("CF_ACCESS_KEY_ID")
         secret_key = os.getenv("CF_SECRET_ACCESS_KEY")
         bucket_name = os.getenv("CLOUDFLARE_R2_BUCKET")
         endpoint_url = os.getenv("CLOUDFLARE_R2_ENDPOINT")
         
-        # Use worker URL instead of direct R2 public URL
         worker_url = os.getenv("CLOUDFLARE_WORKER_URL", "https://specsnexus-images.senya-videos.workers.dev")
         
-        # Log credential availability for debugging
         logger.info(f"R2 Credentials - Access Key: {'Available' if access_key else 'Missing'}")
         logger.info(f"R2 Credentials - Secret Key: {'Available' if secret_key else 'Missing'}")
         logger.info(f"R2 Credentials - Bucket: {bucket_name or 'Missing'}")
@@ -71,7 +67,6 @@ async def upload_to_r2(file: UploadFile, object_key: str):
         if not all([access_key, secret_key, bucket_name, endpoint_url, worker_url]):
             raise ValueError("Missing R2 credentials or configuration")
         
-        # Create S3 client with explicit credentials
         s3 = boto3.client(
             's3',
             aws_access_key_id=access_key,
@@ -79,11 +74,9 @@ async def upload_to_r2(file: UploadFile, object_key: str):
             endpoint_url=endpoint_url
         )
         
-        # Upload the file
         logger.info(f"Uploading file to R2: {object_key}")
         s3.upload_fileobj(file.file, bucket_name, object_key)
         
-        # Use the worker URL for the uploaded file
         if worker_url.endswith('/'):
             file_url = f"{worker_url}{object_key}"
         else:
@@ -108,7 +101,17 @@ def get_announcements(
     logger.info(f"User {current_user.id} fetched {len(announcements)} announcements")
     return announcements
 
-# Officer Endpoints for Announcements
+# Endpoint: GET /announcements/officer/list
+# Description: Fetches a list of announcements, with an option to include archived ones.
+@router.get("/officer/list", response_model=List[schemas.AnnouncementSchema])
+def admin_list_announcements(
+    archived: bool = False,
+    db: Session = Depends(get_db)
+):
+    logger.debug(f"Fetching announcements with archived={archived}")
+    announcements = db.query(models.Announcement).filter(models.Announcement.archived == archived).all()
+    logger.info(f"Fetched {len(announcements)} announcements with archived={archived}")
+    return announcements
 
 # Endpoint: POST /announcements/officer/create
 # Description: Creates a new announcement. An image can be optionally uploaded to R2.
@@ -125,7 +128,6 @@ async def admin_create_announcement(
     
     image_url = None
     if image and image.filename:
-        # Only attempt upload if there's actually a file
         filename = f"{uuid.uuid4()}-{image.filename}"
         object_key = f"announcement_images/{filename}"
         image_url = await upload_to_r2(image, object_key)
@@ -164,7 +166,6 @@ async def admin_update_announcement(
         raise HTTPException(status_code=404, detail="Announcement not found")
     
     if image and image.filename:
-        # Only attempt upload if there's actually a file
         filename = f"{uuid.uuid4()}-{image.filename}"
         object_key = f"announcement_images/{filename}"
         announcement.image_url = await upload_to_r2(image, object_key)
