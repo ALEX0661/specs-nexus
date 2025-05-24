@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.database import engine, SessionLocal  
 from app import models
-from app.routes import auth, clearance, membership, events, announcements, officers, analytics
+from app.routes import auth, clearance, membership, events, announcements, officers, analytics, chat
 from dotenv import load_dotenv
 import os
 import pathlib
@@ -62,6 +62,7 @@ app.include_router(events.router)
 app.include_router(announcements.router)
 app.include_router(officers.router)
 app.include_router(analytics.router)
+app.include_router(chat.router)
 
 # Create database tables
 try:
