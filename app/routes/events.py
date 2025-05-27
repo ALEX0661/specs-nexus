@@ -461,30 +461,27 @@ def get_user_certificates(
     current_user: models.User = Depends(get_current_user)
 ):
     logger.debug(f"User {current_user.id} fetching their e-certificates")
-    certificates = db.query(models.ECertificate).outerjoin(models.Event).filter(
+    certificates = db.query(models.ECertificate).join(models.Event).filter(
         models.ECertificate.user_id == current_user.id
     ).all()
     
-    for cert in certificates:
-        if hasattr(cert, 'event') and cert.event and hasattr(cert.event, 'title') and cert.event.title:
-            cert.event_title = cert.event.title
-        else:
-            cert.event_title = "Unknown Event"
-            logger.warning(
-                f"Certificate {cert.id} for user {current_user.id} has no valid event title. "
-                f"Event ID: {cert.event_id}, Event exists: {bool(hasattr(cert, 'event') and cert.event)}, "
-                f"Event title: {cert.event.title if hasattr(cert, 'event') and cert.event else None}"
-            )
+    # Construct response list to match ECertificateSchema
+    certificate_response = [
+        {
+            "id": cert.id,
+            "user_id": cert.user_id,
+            "event_id": cert.event_id,
+            "certificate_url": cert.certificate_url,
+            "thumbnail_url": cert.thumbnail_url,
+            "file_name": cert.file_name,
+            "issued_date": cert.issued_date,
+            "event_title": cert.event.title if cert.event else "Unknown Event"
+        }
+        for cert in certificates
+    ]
     
-    # Debug: Log all certificate data before returning
-    for cert in certificates:
-        logger.debug(f"Certificate {cert.id} data: {{id: {cert.id}, user_id: {cert.user_id}, "
-                     f"event_id: {cert.event_id}, certificate_url: {cert.certificate_url}, "
-                     f"thumbnail_url: {cert.thumbnail_url}, file_name: {cert.file_name}, "
-                     f"issued_date: {cert.issued_date}, event_title: {cert.event_title}}}")
-    
-    logger.info(f"User {current_user.id} fetched {len(certificates)} e-certificates")
-    return certificates
+    logger.info(f"User {current_user.id} fetched {len(certificate_response)} e-certificates")
+    return certificate_response
 
 @router.get("/certificates/{certificate_id}/thumbnail", response_model=str)
 async def get_certificate_thumbnail(
