@@ -430,12 +430,12 @@ def get_user_certificates(
     current_user: models.User = Depends(get_current_user)
 ):
     logger.debug(f"User {current_user.id} fetching their e-certificates")
-    certificates = db.query(models.ECertificate).join(models.Event).filter(
+    certificates = db.query(models.ECertificate).outerjoin(models.Event).filter(
         models.ECertificate.user_id == current_user.id
     ).all()
     
     for cert in certificates:
-        cert.event_title = cert.event.title if cert.event else "Unknown Event"
+        cert.event_title = cert.event.title if cert.event and cert.event.title else "Unknown Event"
     
     logger.info(f"User {current_user.id} fetched {len(certificates)} e-certificates")
     return certificates
