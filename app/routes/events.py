@@ -223,9 +223,7 @@ def leave_event(
 def admin_list_events(
     archived: bool = False,
     db: Session = Depends(get_db),
-    current_officer: models.Officer = Depends(get_current_officer)
 ):
-    logger.debug(f"Officer {current_officer.id} fetching events with archived={archived}")
     events = db.query(models.Event).filter(models.Event.archived == archived).all()
     logger.info(f"Fetched {len(events)} events with archived={archived}")
     return events
@@ -240,9 +238,9 @@ async def admin_create_event(
     registration_end: Optional[datetime] = Form(None),
     image: UploadFile = File(None),
     db: Session = Depends(get_db),
-    current_officer: models.Officer = Depends(get_current_officer)
+    
 ):
-    logger.debug(f"Officer {current_officer.id} creating event with title: {title}")
+    logger.debug(f"Officer creating event with title: {title}")
     
     image_url = None
     if image and image.filename:
@@ -280,9 +278,9 @@ async def admin_update_event(
     registration_end: Optional[datetime] = Form(None),
     image: UploadFile = File(None),
     db: Session = Depends(get_db),
-    current_officer: models.Officer = Depends(get_current_officer)
+    
 ):
-    logger.debug(f"Officer {current_officer.id} updating event id: {event_id}")
+    logger.debug(f"Officer updating event id: {event_id}")
     event = db.query(models.Event).filter(models.Event.id == event_id).first()
     if not event:
         logger.error(f"Event {event_id} not found for update")
@@ -313,9 +311,9 @@ async def admin_update_event(
 def admin_delete_event(
     event_id: int,
     db: Session = Depends(get_db),
-    current_officer: models.Officer = Depends(get_current_officer)
+   
 ):
-    logger.debug(f"Officer {current_officer.id} attempting to archive event id: {event_id}")
+    logger.debug(f"Officer attempting to archive event id: {event_id}")
     event = db.query(models.Event).filter(models.Event.id == event_id).first()
     if not event:
         logger.error(f"Event {event_id} not found for deletion")
@@ -329,9 +327,9 @@ def admin_delete_event(
 def get_event_participants(
     event_id: int,
     db: Session = Depends(get_db),
-    current_officer: models.Officer = Depends(get_current_officer)
+    
 ):
-    logger.debug(f"Officer {current_officer.id} fetching participants for event id: {event_id}")
+    logger.debug(f"Officer fetching participants for event id: {event_id}")
     event = db.query(models.Event).filter(models.Event.id == event_id).first()
     if not event:
         logger.error(f"Event {event_id} not found for fetching participants")
