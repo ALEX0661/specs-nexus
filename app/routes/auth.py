@@ -21,7 +21,7 @@ def get_db():
 
 # Endpoint: POST /auth/login
 # Description: Authenticates a user with email/student_number and password. If successful, updates the user's last active time (using Philippine Time)
-# and returns a JWT access token.
+# and returns a JWT access token.a
 @router.post("/login", response_model=dict)
 def login(user_login: schemas.UserLogin, db: Session = Depends(get_db)):
     logger.debug(f"Login attempt for user: {user_login.email_or_student_number}")
