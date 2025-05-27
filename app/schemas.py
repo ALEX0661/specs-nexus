@@ -34,10 +34,10 @@ class ECertificateSchema(BaseModel):
     user_id: int
     event_id: int
     certificate_url: str
-    thumbnail_url: Optional[str] = None  # Add this field
+    thumbnail_url: Optional[str] = None
     file_name: str
     issued_date: datetime
-    event_title: str
+    event_title: str  # Required field, cannot be None
 
     class Config:
         orm_mode = True
