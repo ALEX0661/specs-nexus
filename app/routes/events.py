@@ -6,21 +6,25 @@ import boto3
 from botocore.client import Config
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from io import BytesIO
 from PIL import Image
 import fitz  # PyMuPDF
 from app.database import SessionLocal
 from app import models, schemas
 from app.auth_utils import get_current_user, get_current_officer
+from app.models import event_participants  # Added import
+
 logger = logging.getLogger("app.events")
 router = APIRouter(prefix="/events", tags=["Events"])
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
 # Configure boto3 client for Cloudflare R2
 access_key_id = os.getenv('CF_ACCESS_KEY_ID')
 secret_access_key = os.getenv('CF_SECRET_ACCESS_KEY')
@@ -41,6 +45,7 @@ s3 = boto3.client(
     config=Config(signature_version='s3v4'),
     region_name='auto'
 )
+
 async def upload_to_r2(file: UploadFile, object_key: str):
     try:
         access_key = os.getenv("CF_ACCESS_KEY_ID")
@@ -72,6 +77,7 @@ async def upload_to_r2(file: UploadFile, object_key: str):
     except Exception as e:
         logger.error(f"Error uploading file to R2: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to upload file to R2: {str(e)}")
+
 async def generate_pdf_thumbnail(pdf_url: str, certificate_id: int) -> str:
     try:
         worker_url = os.getenv("CLOUDFLARE_WORKER_URL", "https://specsnexus-images.senya-videos.workers.dev")
@@ -115,6 +121,7 @@ async def generate_pdf_thumbnail(pdf_url: str, certificate_id: int) -> str:
     except Exception as e:
         logger.error(f"Error generating thumbnail for certificate {certificate_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate PDF thumbnail: {str(e)}")
+
 @router.get("/", response_model=List[schemas.EventSchema])
 def get_events(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     logger.debug(f"User {current_user.id} ({current_user.full_name}) fetching all active events")
@@ -123,6 +130,7 @@ def get_events(db: Session = Depends(get_db), current_user: models.User = Depend
         event.is_participant = any(participant.id == current_user.id for participant in event.participants)
     logger.info(f"User {current_user.id} fetched {len(events)} events")
     return events
+
 @router.post("/join/{event_id}", response_model=schemas.MessageResponse)
 def join_event(
     event_id: int,
@@ -149,6 +157,7 @@ def join_event(
     db.commit()
     logger.info(f"User {user_in_session.id} joined event {event_id}")
     return {"message": "Successfully joined the event"}
+
 @router.post("/leave/{event_id}", response_model=schemas.MessageResponse)
 def leave_event(
     event_id: int,
@@ -172,6 +181,7 @@ def leave_event(
     db.commit()
     logger.info(f"User {current_user.id} left event {event_id}")
     return {"message": "Successfully left the event"}
+
 @router.get("/officer/list", response_model=List[schemas.EventSchema])
 def admin_list_events(
     archived: bool = False,
@@ -182,6 +192,7 @@ def admin_list_events(
     events = db.query(models.Event).filter(models.Event.archived == archived).all()
     logger.info(f"Fetched {len(events)} events with archived={archived}")
     return events
+
 @router.post("/officer/create", response_model=schemas.EventSchema)
 async def admin_create_event(
     title: str = Form(...),
@@ -217,6 +228,7 @@ async def admin_create_event(
     db.refresh(new_event)
     logger.info(f"Officer {current_officer.id} created event successfully with id: {new_event.id}")
     return new_event
+
 @router.put("/officer/update/{event_id}", response_model=schemas.EventSchema)
 async def admin_update_event(
     event_id: int,
@@ -252,6 +264,7 @@ async def admin_update_event(
     db.refresh(event)
     logger.info(f"Officer {current_officer.id} updated event {event_id} successfully")
     return event
+
 @router.delete("/officer/delete/{event_id}", response_model=dict)
 def admin_delete_event(
     event_id: int,
@@ -267,7 +280,6 @@ def admin_delete_event(
     db.commit()
     logger.info(f"Officer {current_officer.id} archived event {event_id} successfully")
     return {"detail": "Event archived successfully"}
-from sqlalchemy.orm import joinedload
 
 @router.get("/{event_id}/participants", response_model=List[schemas.User])
 def get_event_participants(
@@ -315,7 +327,7 @@ def get_event_participants(
             "year": user.year,
             "block": user.block,
             "last_active": user.last_active,
-            "participated_events": [],
+            "participated_events": [],  # Empty list as per original code
             "certificates": certificates_response
         })
 
@@ -434,6 +446,7 @@ async def upload_e_certificate(
         }
         logger.info(f"E-certificate uploaded for user {user_id} in event {event_id}")
         return certificate_response
+
 @router.get("/certificates", response_model=List[schemas.ECertificateSchema])
 def get_user_certificates(
     db: Session = Depends(get_db),
@@ -458,6 +471,7 @@ def get_user_certificates(
     ]
     logger.info(f"User {current_user.id} fetched {len(certificate_response)} e-certificates")
     return certificate_response
+
 @router.get("/certificates/{certificate_id}/thumbnail", response_model=str)
 async def get_certificate_thumbnail(
     certificate_id: int,
