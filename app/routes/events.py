@@ -435,7 +435,15 @@ def get_user_certificates(
     ).all()
     
     for cert in certificates:
-        cert.event_title = cert.event.title if cert.event and cert.event.title else "Unknown Event"
+        if cert.event and cert.event.title:
+            cert.event_title = cert.event.title
+        else:
+            cert.event_title = "Unknown Event"
+            logger.warning(
+                f"Certificate {cert.id} for user {current_user.id} has no valid event title. "
+                f"Event ID: {cert.event_id}, Event exists: {bool(cert.event)}, "
+                f"Event title: {cert.event.title if cert.event else None}"
+            )
     
     logger.info(f"User {current_user.id} fetched {len(certificates)} e-certificates")
     return certificates
