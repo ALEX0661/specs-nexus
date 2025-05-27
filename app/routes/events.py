@@ -267,6 +267,8 @@ def admin_delete_event(
     db.commit()
     logger.info(f"Officer {current_officer.id} archived event {event_id} successfully")
     return {"detail": "Event archived successfully"}
+from sqlalchemy.orm import joinedload
+
 @router.get("/{event_id}/participants", response_model=List[schemas.User])
 def get_event_participants(
     event_id: int,
@@ -278,9 +280,34 @@ def get_event_participants(
     if not event:
         logger.error(f"Event {event_id} not found for fetching participants")
         raise HTTPException(status_code=404, detail="Event not found")
-    # Construct response to match User schema
-    participants_response = [
-        {
+
+    # Fetch participants with their certificates and related events
+    participants = (
+        db.query(models.User)
+        .join(event_participants, models.User.id == event_participants.c.user_id)
+        .filter(event_participants.c.event_id == event_id)
+        .options(joinedload(models.User.certificates).joinedload(models.ECertificate.event))
+        .all()
+    )
+
+    participants_response = []
+    for user in participants:
+        certificates_response = [
+            {
+                "id": cert.id,
+                "user_id": cert.user_id,
+                "event_id": cert.event_id,
+                "certificate_url": cert.certificate_url,
+                "thumbnail_url": cert.thumbnail_url,
+                "file_name": cert.file_name,
+                "issued_date": cert.issued_date,
+                "event_title": cert.event.title if cert.event else "Unknown Event"
+            }
+            for cert in user.certificates
+            if not (cert.event is None and logger.warning(f"Certificate {cert.id} has no associated event (event_id: {cert.event_id})"))
+        ]
+
+        participants_response.append({
             "id": user.id,
             "email": user.email,
             "student_number": user.student_number,
@@ -288,25 +315,13 @@ def get_event_participants(
             "year": user.year,
             "block": user.block,
             "last_active": user.last_active,
-            "participated_events": [],  # Optional field, set to empty list
-            "e_certificates": [
-                {
-                    "id": cert.id,
-                    "user_id": cert.user_id,
-                    "event_id": cert.event_id,
-                    "certificate_url": cert.certificate_url,
-                    "thumbnail_url": cert.thumbnail_url,
-                    "file_name": cert.file_name,
-                    "issued_date": cert.issued_date,
-                    "event_title": cert.event.title if cert.event else "Certifications"
-                }
-                for cert in user.e_certificates
-            ]
-        }
-        for user in event.participants
-    ]
+            "participated_events": [],
+            "certificates": certificates_response
+        })
+
     logger.info(f"Fetched {len(participants_response)} participants for event id: {event_id}")
     return participants_response
+
 @router.get("/{event_id}/certificates/{user_id}", response_model=schemas.ECertificateSchema)
 def get_e_certificate(
     event_id: int,
@@ -314,14 +329,19 @@ def get_e_certificate(
     db: Session = Depends(get_db),
 ):
     logger.debug(f"Officer fetching certificate for user {user_id} in event {event_id}")
-    certificate = db.query(models.ECertificate).filter(
-        models.ECertificate.event_id == event_id,
-        models.ECertificate.user_id == user_id
-    ).first()
+    certificate = (
+        db.query(models.ECertificate)
+        .join(models.Event, models.ECertificate.event_id == models.Event.id, isouter=True)
+        .filter(
+            models.ECertificate.event_id == event_id,
+            models.ECertificate.user_id == user_id
+        )
+        .first()
+    )
     if not certificate:
         logger.error(f"No certificate found for user {user_id} in event {event_id}")
         raise HTTPException(status_code=404, detail="No certificate found for this user and event")
-    
+
     certificate_response = {
         "id": certificate.id,
         "user_id": certificate.user_id,
@@ -330,11 +350,12 @@ def get_e_certificate(
         "thumbnail_url": certificate.thumbnail_url,
         "file_name": certificate.file_name,
         "issued_date": certificate.issued_date,
-        "event_title": certificate.event.title if certificate.event else "Certificate"
+        "event_title": certificate.event.title if certificate.event else "Unknown Event"
     }
-    
+
     logger.info(f"Fetched certificate for user {user_id} in event {event_id}")
     return certificate_response
+
 @router.post("/{event_id}/certificates/{user_id}", response_model=schemas.ECertificateSchema)
 async def upload_e_certificate(
     event_id: int,
@@ -364,7 +385,7 @@ async def upload_e_certificate(
     ).first()
     
     filename = f"{uuid.uuid4()}-{certificate.filename}"
-    object_key = f"e_certificates/{filename}"
+    object_key = f"certificates/{filename}"
     certificate_url = await upload_to_r2(certificate, object_key)
     
     cert_id = existing_certificate.id if existing_certificate else uuid.uuid4()
