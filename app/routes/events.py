@@ -7,14 +7,13 @@ from botocore.client import Config
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy.exc import SQLAlchemyError
 from io import BytesIO
 from PIL import Image
 import fitz  # PyMuPDF
 from app.database import SessionLocal
 from app import models, schemas
-from app.auth_utils import get_current_user  # Removed get_current_officer
-from app.models import event_participants
+from app.auth_utils import get_current_user, get_current_officer
+from app.models import event_participants  # Import the association table
 
 logger = logging.getLogger("app.events")
 router = APIRouter(prefix="/events", tags=["Events"])
@@ -126,15 +125,11 @@ async def generate_pdf_thumbnail(pdf_url: str, certificate_id: int) -> str:
 @router.get("/", response_model=List[schemas.EventSchema])
 def get_events(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     logger.debug(f"User {current_user.id} ({current_user.full_name}) fetching all active events")
-    try:
-        events = db.query(models.Event).filter(models.Event.archived == False).all()
-        for event in events:
-            event.is_participant = any(participant.id == current_user.id for participant in event.participants)
-        logger.info(f"User {current_user.id} fetched {len(events)} events")
-        return events
-    except SQLAlchemyError as e:
-        logger.error(f"Database error while fetching events for user {current_user.id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Database error occurred")
+    events = db.query(models.Event).filter(models.Event.archived == False).all()
+    for event in events:
+        event.is_participant = any(participant.id == current_user.id for participant in event.participants)
+    logger.info(f"User {current_user.id} fetched {len(events)} events")
+    return events
 
 @router.post("/join/{event_id}", response_model=schemas.MessageResponse)
 def join_event(
@@ -143,29 +138,25 @@ def join_event(
     current_user: models.User = Depends(get_current_user)
 ):
     logger.debug(f"User {current_user.id} ({current_user.full_name}) attempting to join event {event_id}")
-    try:
-        event = db.query(models.Event).filter(models.Event.id == event_id).first()
-        if not event:
-            logger.error(f"Event {event_id} not found for user {current_user.id}")
-            raise HTTPException(status_code=404, detail="Event not found")
-        now = datetime.utcnow()
-        if event.registration_start and now < event.registration_start:
-            logger.error(f"Registration for event {event_id} has not started yet for user {current_user.id}")
-            raise HTTPException(status_code=403, detail="Registration for this event has not started yet")
-        if event.registration_end and now > event.registration_end:
-            logger.error(f"Registration for event {event_id} has ended for user {current_user.id}")
-            raise HTTPException(status_code=403, detail="Registration for this event has ended")
-        user_in_session = db.merge(current_user)
-        if any(user.id == user_in_session.id for user in event.participants):
-            logger.info(f"User {user_in_session.id} already participating in event {event_id}")
-            return {"message": "Already participating in this event"}
-        event.participants.append(user_in_session)
-        db.commit()
-        logger.info(f"User {user_in_session.id} joined event {event_id}")
-        return {"message": "Successfully joined the event"}
-    except SQLAlchemyError as e:
-        logger.error(f"Database error while joining event {event_id} for user {current_user.id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Database error occurred")
+    event = db.query(models.Event).filter(models.Event.id == event_id).first()
+    if not event:
+        logger.error(f"Event {event_id} not found for user {current_user.id}")
+        raise HTTPException(status_code=404, detail="Event not found")
+    now = datetime.utcnow()
+    if event.registration_start and now < event.registration_start:
+        logger.error(f"Registration for event {event_id} has not started yet for user {current_user.id}")
+        raise HTTPException(status_code=403, detail="Registration for this event has not started yet")
+    if event.registration_end and now > event.registration_end:
+        logger.error(f"Registration for event {event_id} has ended for user {current_user.id}")
+        raise HTTPException(status_code=403, detail="Registration for this event has ended")
+    user_in_session = db.merge(current_user)
+    if any(user.id == user_in_session.id for user in event.participants):
+        logger.info(f"User {user_in_session.id} already participating in event {event_id}")
+        return {"message": "Already participating in this event"}
+    event.participants.append(user_in_session)
+    db.commit()
+    logger.info(f"User {user_in_session.id} joined event {event_id}")
+    return {"message": "Successfully joined the event"}
 
 @router.post("/leave/{event_id}", response_model=schemas.MessageResponse)
 def leave_event(
@@ -174,40 +165,33 @@ def leave_event(
     current_user: models.User = Depends(get_current_user)
 ):
     logger.debug(f"User {current_user.id} ({current_user.full_name}) attempting to leave event {event_id}")
-    try:
-        event = db.query(models.Event).filter(models.Event.id == event_id).first()
-        if not event:
-            logger.error(f"Event {event_id} not found for user {current_user.id}")
-            raise HTTPException(status_code=404, detail="Event not found")
-        now = datetime.utcnow()
-        if event.registration_end and now > event.registration_end:
-            logger.error(f"Registration for event {event_id} has ended, cannot leave for user {current_user.id}")
-            raise HTTPException(status_code=403, detail="Registration for this event has ended, cannot leave now")
-        user_in_event = next((user for user in event.participants if user.id == current_user.id), None)
-        if not user_in_event:
-            logger.info(f"User {current_user.id} is not participating in event {event_id}")
-            return {"message": "You are not participating in this event"}
-        event.participants.remove(user_in_event)
-        db.commit()
-        logger.info(f"User {current_user.id} left event {event_id}")
-        return {"message": "Successfully left the event"}
-    except SQLAlchemyError as e:
-        logger.error(f"Database error while leaving event {event_id} for user {current_user.id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Database error occurred")
+    event = db.query(models.Event).filter(models.Event.id == event_id).first()
+    if not event:
+        logger.error(f"Event {event_id} not found for user {current_user.id}")
+        raise HTTPException(status_code=404, detail="Event not found")
+    now = datetime.utcnow()
+    if event.registration_end and now > event.registration_end:
+        logger.error(f"Registration for event {event_id} has ended, cannot leave for user {current_user.id}")
+        raise HTTPException(status_code=403, detail="Registration for this event has ended, cannot leave now")
+    user_in_event = next((user for user in event.participants if user.id == current_user.id), None)
+    if not user_in_event:
+        logger.info(f"User {current_user.id} is not participating in event {event_id}")
+        return {"message": "You are not participating in this event"}
+    event.participants.remove(user_in_event)
+    db.commit()
+    logger.info(f"User {current_user.id} left event {event_id}")
+    return {"message": "Successfully left the event"}
 
 @router.get("/officer/list", response_model=List[schemas.EventSchema])
 def admin_list_events(
     archived: bool = False,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_officer: models.Officer = Depends(get_current_officer)
 ):
-    logger.debug(f"Fetching events with archived={archived}")
-    try:
-        events = db.query(models.Event).filter(models.Event.archived == archived).all()
-        logger.info(f"Fetched {len(events)} events with archived={archived}")
-        return events
-    except SQLAlchemyError as e:
-        logger.error(f"Database error while fetching events: {str(e)}")
-        raise HTTPException(status_code=500, detail="Database error occurred")
+    logger.debug(f"Officer {current_officer.id} fetching events with archived={archived}")
+    events = db.query(models.Event).filter(models.Event.archived == archived).all()
+    logger.info(f"Fetched {len(events)} events with archived={archived}")
+    return events
 
 @router.post("/officer/create", response_model=schemas.EventSchema)
 async def admin_create_event(
@@ -218,35 +202,32 @@ async def admin_create_event(
     registration_start: Optional[datetime] = Form(None),
     registration_end: Optional[datetime] = Form(None),
     image: UploadFile = File(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_officer: models.Officer = Depends(get_current_officer)
 ):
-    logger.debug(f"Creating event with title: {title}")
-    try:
-        image_url = None
-        if image and image.filename:
-            filename = f"{uuid.uuid4()}-{image.filename}"
-            object_key = f"event_images/{filename}"
-            image_url = await upload_to_r2(image, object_key)
-            logger.debug(f"Uploaded event image to R2: {image_url}")
-        if not registration_start:
-            registration_start = datetime.utcnow()
-        new_event = models.Event(
-            title=title,
-            description=description,
-            date=date,
-            image_url=image_url,
-            location=location,
-            registration_start=registration_start,
-            registration_end=registration_end
-        )
-        db.add(new_event)
-        db.commit()
-        db.refresh(new_event)
-        logger.info(f"Created event successfully with id: {new_event.id}")
-        return new_event
-    except SQLAlchemyError as e:
-        logger.error(f"Database error while creating event: {str(e)}")
-        raise HTTPException(status_code=500, detail="Database error occurred")
+    logger.debug(f"Officer {current_officer.id} creating event with title: {title}")
+    image_url = None
+    if image and image.filename:
+        filename = f"{uuid.uuid4()}-{image.filename}"
+        object_key = f"event_images/{filename}"
+        image_url = await upload_to_r2(image, object_key)
+        logger.debug(f"Uploaded event image to R2: {image_url}")
+    if not registration_start:
+        registration_start = datetime.utcnow()
+    new_event = models.Event(
+        title=title,
+        description=description,
+        date=date,
+        image_url=image_url,
+        location=location,
+        registration_start=registration_start,
+        registration_end=registration_end
+    )
+    db.add(new_event)
+    db.commit()
+    db.refresh(new_event)
+    logger.info(f"Officer {current_officer.id} created event successfully with id: {new_event.id}")
+    return new_event
 
 @router.put("/officer/update/{event_id}", response_model=schemas.EventSchema)
 async def admin_update_event(
@@ -258,240 +239,72 @@ async def admin_update_event(
     registration_start: Optional[datetime] = Form(None),
     registration_end: Optional[datetime] = Form(None),
     image: UploadFile = File(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_officer: models.Officer = Depends(get_current_officer)
 ):
-    logger.debug(f"Updating event id: {event_id}")
-    try:
-        event = db.query(models.Event).filter(models.Event.id == event_id).first()
-        if not event:
-            logger.error(f"Event {event_id} not found for update")
-            raise HTTPException(status_code=404, detail="Event not found")
-        if image and image.filename:
-            filename = f"{uuid.uuid4()}-{image.filename}"
-            object_key = f"event_images/{filename}"
-            event.image_url = await upload_to_r2(image, object_key)
-            logger.debug(f"Updated event image in R2: {event.image_url}")
-        event.title = title
-        event.description = description
-        event.date = date
-        event.location = location
-        if registration_start:
-            event.registration_start = registration_start
-        if registration_end:
-            event.registration_end = registration_end
-        db.commit()
-        db.refresh(event)
-        logger.info(f"Updated event {event_id} successfully")
-        return event
-    except SQLAlchemyError as e:
-        logger.error(f"Database error while updating event {event_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Database error occurred")
+    logger.debug(f"Officer {current_officer.id} updating event id: {event_id}")
+    event = db.query(models.Event).filter(models.Event.id == event_id).first()
+    if not event:
+        logger.error(f"Event {event_id} not found for update")
+        raise HTTPException(status_code=404, detail="Event not found")
+    if image and image.filename:
+        filename = f"{uuid.uuid4()}-{image.filename}"
+        object_key = f"event_images/{filename}"
+        event.image_url = await upload_to_r2(image, object_key)
+        logger.debug(f"Updated event image in R2: {event.image_url}")
+    event.title = title
+    event.description = description
+    event.date = date
+    event.location = location
+    if registration_start:
+        event.registration_start = registration_start
+    if registration_end:
+        event.registration_end = registration_end
+    db.commit()
+    db.refresh(event)
+    logger.info(f"Officer {current_officer.id} updated event {event_id} successfully")
+    return event
 
 @router.delete("/officer/delete/{event_id}", response_model=dict)
 def admin_delete_event(
     event_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_officer: models.Officer = Depends(get_current_officer)
 ):
-    logger.debug(f"Attempting to archive event id: {event_id}")
-    try:
-        event = db.query(models.Event).filter(models.Event.id == event_id).first()
-        if not event:
-            logger.error(f"Event {event_id} not found for deletion")
-            raise HTTPException(status_code=404, detail="Event not found")
-        event.archived = True
-        db.commit()
-        logger.info(f"Archived event {event_id} successfully")
-        return {"detail": "Event archived successfully"}
-    except SQLAlchemyError as e:
-        logger.error(f"Database error while archiving event {event_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Database error occurred")
+    logger.debug(f"Officer {current_officer.id} attempting to archive event id: {event_id}")
+    event = db.query(models.Event).filter(models.Event.id == event_id).first()
+    if not event:
+        logger.error(f"Event {event_id} not found for deletion")
+        raise HTTPException(status_code=404, detail="Event not found")
+    event.archived = True
+    db.commit()
+    logger.info(f"Officer {current_officer.id} archived event {event_id} successfully")
+    return {"detail": "Event archived successfully"}
 
 @router.get("/{event_id}/participants", response_model=List[schemas.User])
 def get_event_participants(
     event_id: int,
-    db: Session = Depends(get_db)
-):
-    logger.debug(f"Fetching participants for event id: {event_id}")
-    try:
-        event = db.query(models.Event).filter(models.Event.id == event_id).first()
-        if not event:
-            logger.error(f"Event {event_id} not found for fetching participants")
-            raise HTTPException(status_code=404, detail="Event not found")
-
-        # Fetch participants with their certificates and related events
-        participants = (
-            db.query(models.User)
-            .join(event_participants, models.User.id == event_participants.c.user_id)
-            .filter(event_participants.c.event_id == event_id)
-            .options(joinedload(models.User.certificates).joinedload(models.ECertificate.event))
-            .all()
-        )
-
-        participants_response = []
-        for user in participants:
-            certificates_response = [
-                {
-                    "id": cert.id,
-                    "user_id": cert.user_id,
-                    "event_id": cert.event_id,
-                    "certificate_url": cert.certificate_url,
-                    "thumbnail_url": cert.thumbnail_url,
-                    "file_name": cert.file_name,
-                    "issued_date": cert.issued_date,
-                    "event_title": cert.event.title if cert.event else "Unknown Event"
-                }
-                for cert in user.certificates
-            ]
-
-            participants_response.append({
-                "id": user.id,
-                "email": user.email,
-                "student_number": user.student_number,
-                "full_name": user.full_name,
-                "year": user.year,
-                "block": user.block,
-                "last_active": user.last_active,
-                "participated_events": [],  # Empty list as per original code
-                "certificates": certificates_response
-            })
-
-        logger.info(f"Fetched {len(participants_response)} participants for event id: {event_id}")
-        return participants_response
-    except SQLAlchemyError as e:
-        logger.error(f"Database error while fetching participants for event {event_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Database error occurred")
-
-@router.get("/{event_id}/certificates/{user_id}", response_model=schemas.ECertificateSchema)
-def get_e_certificate(
-    event_id: int,
-    user_id: int,
-    db: Session = Depends(get_db)
-):
-    logger.debug(f"Fetching certificate for user {user_id} in event {event_id}")
-    try:
-        certificate = (
-            db.query(models.ECertificate)
-            .join(models.Event, models.ECertificate.event_id == models.Event.id, isouter=True)
-            .filter(
-                models.ECertificate.event_id == event_id,
-                models.ECertificate.user_id == user_id
-            )
-            .first()
-        )
-        if not certificate:
-            logger.error(f"No certificate found for user {user_id} in event {event_id}")
-            raise HTTPException(status_code=404, detail="No certificate found for this user and event")
-
-        certificate_response = {
-            "id": certificate.id,
-            "user_id": certificate.user_id,
-            "event_id": certificate.event_id,
-            "certificate_url": certificate.certificate_url,
-            "thumbnail_url": certificate.thumbnail_url,
-            "file_name": certificate.file_name,
-            "issued_date": certificate.issued_date,
-            "event_title": certificate.event.title if certificate.event else "Unknown Event"
-        }
-
-        logger.info(f"Fetched certificate for user {user_id} in event {event_id}")
-        return certificate_response
-    except SQLAlchemyError as e:
-        logger.error(f"Database error while fetching certificate for user {user_id} in event {event_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Database error occurred")
-
-@router.post("/{event_id}/certificates/{user_id}", response_model=schemas.ECertificateSchema)
-async def upload_e_certificate(
-    event_id: int,
-    user_id: int,
-    certificate: UploadFile = File(...),
-    db: Session = Depends(get_db)
-):
-    logger.debug(f"Uploading e-certificate for user {user_id} in event {event_id}")
-    try:
-        event = db.query(models.Event).filter(models.Event.id == event_id).first()
-        if not event:
-            logger.error(f"Event {event_id} not found")
-            raise HTTPException(status_code=404, detail="Event not found")
-        
-        user = db.query(models.User).filter(models.User.id == user_id).first()
-        if not user:
-            logger.error(f"User {user_id} not found")
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        if not any(p.id == user_id for p in event.participants):
-            logger.error(f"User {user_id} is not a participant in event {event_id}")
-            raise HTTPException(status_code=403, detail="User is not a participant in this event")
-        
-        existing_certificate = db.query(models.ECertificate).filter(
-            models.ECertificate.event_id == event_id,
-            models.ECertificate.user_id == user_id
-        ).first()
-        
-        filename = f"{uuid.uuid4()}-{certificate.filename}"
-        object_key = f"certificates/{filename}"
-        certificate_url = await upload_to_r2(certificate, object_key)
-        
-        cert_id = existing_certificate.id if existing_certificate else uuid.uuid4()
-        thumbnail_url = await generate_pdf_thumbnail(certificate_url, cert_id)
-        
-        if existing_certificate:
-            existing_certificate.certificate_url = certificate_url
-            existing_certificate.thumbnail_url = thumbnail_url
-            existing_certificate.file_name = certificate.filename
-            existing_certificate.issued_date = datetime.utcnow()
-            db.commit()
-            db.refresh(existing_certificate)
-            certificate_response = {
-                "id": existing_certificate.id,
-                "user_id": existing_certificate.user_id,
-                "event_id": existing_certificate.event_id,
-                "certificate_url": existing_certificate.certificate_url,
-                "thumbnail_url": existing_certificate.thumbnail_url,
-                "file_name": existing_certificate.file_name,
-                "issued_date": existing_certificate.issued_date,
-                "event_title": event.title
-            }
-            logger.info(f"E-certificate updated for user {user_id} in event {event_id}")
-            return certificate_response
-        else:
-            new_certificate = models.ECertificate(
-                user_id=user_id,
-                event_id=event_id,
-                certificate_url=certificate_url,
-                thumbnail_url=thumbnail_url,
-                file_name=certificate.filename,
-                issued_date=datetime.utcnow()
-            )
-            db.add(new_certificate)
-            db.commit()
-            db.refresh(new_certificate)
-            certificate_response = {
-                "id": new_certificate.id,
-                "user_id": new_certificate.user_id,
-                "event_id": new_certificate.event_id,
-                "certificate_url": new_certificate.certificate_url,
-                "thumbnail_url": new_certificate.thumbnail_url,
-                "file_name": new_certificate.file_name,
-                "issued_date": new_certificate.issued_date,
-                "event_title": event.title
-            }
-            logger.info(f"E-certificate uploaded for user {user_id} in event {event_id}")
-            return certificate_response
-    except SQLAlchemyError as e:
-        logger.error(f"Database error while uploading certificate for user {user_id} in event {event_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Database error occurred")
-
-@router.get("/certificates", response_model=List[schemas.ECertificateSchema])
-def get_user_certificates(
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_officer: models.Officer = Depends(get_current_officer)
 ):
-    logger.debug(f"User {current_user.id} fetching their e-certificates")
-    try:
-        certificates = db.query(models.ECertificate).join(models.Event).filter(
-            models.ECertificate.user_id == current_user.id
-        ).all()
-        certificate_response = [
+    logger.debug(f"Officer {current_officer.id} fetching participants for event id: {event_id}")
+    event = db.query(models.Event).filter(models.Event.id == event_id).first()
+    if not event:
+        logger.error(f"Event {event_id} not found for fetching participants")
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    # Fetch participants with their certificates and related events
+    participants = (
+        db.query(models.User)
+        .join(event_participants, models.User.id == event_participants.c.user_id)
+        .filter(event_participants.c.event_id == event_id)
+        .options(joinedload(models.User.certificates).joinedload(models.ECertificate.event))
+        .all()
+    )
+
+    participants_response = []
+    for user in participants:
+        certificates_response = [
             {
                 "id": cert.id,
                 "user_id": cert.user_id,
@@ -502,13 +315,181 @@ def get_user_certificates(
                 "issued_date": cert.issued_date,
                 "event_title": cert.event.title if cert.event else "Unknown Event"
             }
-            for cert in certificates
+            for cert in user.certificates
+            if not (cert.event is None and logger.warning(f"Certificate {cert.id} has no associated event (event_id: {cert.event_id})"))
         ]
-        logger.info(f"User {current_user.id} fetched {len(certificate_response)} e-certificates")
+
+        # Populate participated_events from user.events_joined
+        participated_events = [
+            {
+                "id": event.id,
+                "title": event.title,
+                "description": event.description,
+                "date": event.date,
+                "image_url": event.image_url,
+                "location": event.location,
+                "participant_count": event.participant_count,
+                "registration_start": event.registration_start,
+                "registration_end": event.registration_end,
+                "registration_open": event.registration_open,
+                "registration_status": event.registration_status,
+                "is_participant": True
+            }
+            for event in user.events_joined
+        ]
+
+        participants_response.append({
+            "id": user.id,
+            "email": user.email,
+            "student_number": user.student_number,
+            "full_name": user.full_name,
+            "year": str(user.year) if user.year else None,  # Convert Enum to string
+            "block": user.block,
+            "last_active": user.last_active,
+            "participated_events": participated_events,
+            "certificates": certificates_response
+        })
+
+    logger.info(f"Fetched {len(participants_response)} participants for event id: {event_id}")
+    return participants_response
+
+@router.get("/{event_id}/certificates/{user_id}", response_model=schemas.ECertificateSchema)
+def get_e_certificate(
+    event_id: int,
+    user_id: int,
+    db: Session = Depends(get_db),
+):
+    logger.debug(f"Officer fetching certificate for user {user_id} in event {event_id}")
+    certificate = (
+        db.query(models.ECertificate)
+        .join(models.Event, models.ECertificate.event_id == models.Event.id, isouter=True)
+        .filter(
+            models.ECertificate.event_id == event_id,
+            models.ECertificate.user_id == user_id
+        )
+        .first()
+    )
+    if not certificate:
+        logger.error(f"No certificate found for user {user_id} in event {event_id}")
+        raise HTTPException(status_code=404, detail="No certificate found for this user and event")
+
+    certificate_response = {
+        "id": certificate.id,
+        "user_id": certificate.user_id,
+        "event_id": certificate.event_id,
+        "certificate_url": certificate.certificate_url,
+        "thumbnail_url": certificate.thumbnail_url,
+        "file_name": certificate.file_name,
+        "issued_date": certificate.issued_date,
+        "event_title": certificate.event.title if certificate.event else "Unknown Event"
+    }
+
+    logger.info(f"Fetched certificate for user {user_id} in event {event_id}")
+    return certificate_response
+
+@router.post("/{event_id}/certificates/{user_id}", response_model=schemas.ECertificateSchema)
+async def upload_e_certificate(
+    event_id: int,
+    user_id: int,
+    certificate: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    logger.debug(f"Officer uploading e-certificate for user {user_id} in event {event_id}")
+    
+    event = db.query(models.Event).filter(models.Event.id == event_id).first()
+    if not event:
+        logger.error(f"Event {event_id} not found")
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        logger.error(f"User {user_id} not found")
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not any(p.id == user_id for p in event.participants):
+        logger.error(f"User {user_id} is not a participant in event {event_id}")
+        raise HTTPException(status_code=403, detail="User is not a participant in this event")
+    
+    existing_certificate = db.query(models.ECertificate).filter(
+        models.ECertificate.event_id == event_id,
+        models.ECertificate.user_id == user_id
+    ).first()
+    
+    filename = f"{uuid.uuid4()}-{certificate.filename}"
+    object_key = f"certificates/{filename}"
+    certificate_url = await upload_to_r2(certificate, object_key)
+    
+    cert_id = existing_certificate.id if existing_certificate else uuid.uuid4()
+    thumbnail_url = await generate_pdf_thumbnail(certificate_url, cert_id)
+    
+    if existing_certificate:
+        existing_certificate.certificate_url = certificate_url
+        existing_certificate.thumbnail_url = thumbnail_url
+        existing_certificate.file_name = certificate.filename
+        existing_certificate.issued_date = datetime.utcnow()
+        db.commit()
+        db.refresh(existing_certificate)
+        certificate_response = {
+            "id": existing_certificate.id,
+            "user_id": existing_certificate.user_id,
+            "event_id": existing_certificate.event_id,
+            "certificate_url": existing_certificate.certificate_url,
+            "thumbnail_url": existing_certificate.thumbnail_url,
+            "file_name": existing_certificate.file_name,
+            "issued_date": existing_certificate.issued_date,
+            "event_title": event.title
+        }
+        logger.info(f"E-certificate updated for user {user_id} in event {event_id}")
         return certificate_response
-    except SQLAlchemyError as e:
-        logger.error(f"Database error while fetching certificates for user {current_user.id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Database error occurred")
+    else:
+        new_certificate = models.ECertificate(
+            user_id=user_id,
+            event_id=event_id,
+            certificate_url=certificate_url,
+            thumbnail_url=thumbnail_url,
+            file_name=certificate.filename,
+            issued_date=datetime.utcnow()
+        )
+        db.add(new_certificate)
+        db.commit()
+        db.refresh(new_certificate)
+        certificate_response = {
+            "id": new_certificate.id,
+            "user_id": new_certificate.user_id,
+            "event_id": new_certificate.event_id,
+            "certificate_url": new_certificate.certificate_url,
+            "thumbnail_url": new_certificate.thumbnail_url,
+            "file_name": new_certificate.file_name,
+            "issued_date": new_certificate.issued_date,
+            "event_title": event.title
+        }
+        logger.info(f"E-certificate uploaded for user {user_id} in event {event_id}")
+        return certificate_response
+
+@router.get("/certificates", response_model=List[schemas.ECertificateSchema])
+def get_user_certificates(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    logger.debug(f"User {current_user.id} fetching their e-certificates")
+    certificates = db.query(models.ECertificate).join(models.Event).filter(
+        models.ECertificate.user_id == current_user.id
+    ).all()
+    certificate_response = [
+        {
+            "id": cert.id,
+            "user_id": cert.user_id,
+            "event_id": cert.event_id,
+            "certificate_url": cert.certificate_url,
+            "thumbnail_url": cert.thumbnail_url,
+            "file_name": cert.file_name,
+            "issued_date": cert.issued_date,
+            "event_title": cert.event.title if cert.event else "Unknown Event"
+        }
+        for cert in certificates
+    ]
+    logger.info(f"User {current_user.id} fetched {len(certificate_response)} e-certificates")
+    return certificate_response
 
 @router.get("/certificates/{certificate_id}/thumbnail", response_model=str)
 async def get_certificate_thumbnail(
@@ -517,23 +498,19 @@ async def get_certificate_thumbnail(
     current_user: models.User = Depends(get_current_user)
 ):
     logger.debug(f"User {current_user.id} fetching thumbnail for certificate {certificate_id}")
-    try:
-        certificate = db.query(models.ECertificate).filter(
-            models.ECertificate.id == certificate_id,
-            models.ECertificate.user_id == current_user.id
-        ).first()
-        if not certificate:
-            logger.error(f"No certificate found for id {certificate_id} and user {current_user.id}")
-            raise HTTPException(status_code=404, detail="Certificate not found")
-        if not certificate.certificate_url:
-            logger.error(f"No certificate URL for certificate {certificate_id}")
-            raise HTTPException(status_code=400, detail="No certificate URL available")
-        if not certificate.thumbnail_url:
-            certificate.thumbnail_url = await generate_pdf_thumbnail(certificate.certificate_url, certificate_id)
-            db.commit()
-            db.refresh(certificate)
-        logger.info(f"Thumbnail fetched for certificate {certificate_id}")
-        return certificate.thumbnail_url
-    except SQLAlchemyError as e:
-        logger.error(f"Database error while fetching thumbnail for certificate {certificate_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Database error occurred")
+    certificate = db.query(models.ECertificate).filter(
+        models.ECertificate.id == certificate_id,
+        models.ECertificate.user_id == current_user.id
+    ).first()
+    if not certificate:
+        logger.error(f"No certificate found for id {certificate_id} and user {current_user.id}")
+        raise HTTPException(status_code=404, detail="Certificate not found")
+    if not certificate.certificate_url:
+        logger.error(f"No certificate URL for certificate {certificate_id}")
+        raise HTTPException(status_code=400, detail="No certificate URL available")
+    if not certificate.thumbnail_url:
+        certificate.thumbnail_url = await generate_pdf_thumbnail(certificate.certificate_url, certificate_id)
+        db.commit()
+        db.refresh(certificate)
+    logger.info(f"Thumbnail fetched for certificate {certificate_id}")
+    return certificate.thumbnail_url
