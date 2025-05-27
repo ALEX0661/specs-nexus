@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, computed_field
 from typing import Optional, List
 from datetime import datetime
 
@@ -34,13 +34,13 @@ class ECertificateSchema(BaseModel):
     user_id: int
     event_id: int
     certificate_url: str
-    thumbnail_url: Optional[str] = None  # Add this field
+    thumbnail_url: Optional[str] = None
     file_name: str
     issued_date: datetime
-    event_title: str
+    event_title: Optional[str] = None  # Make it optional with default None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class User(BaseModel):
     id: int
