@@ -21,12 +21,11 @@ class ECertificate(Base):
     thumbnail_url = Column(String, nullable=True)
     file_name = Column(String)
     issued_date = Column(DateTime)
-    event = relationship("Event", back_populates="certificates")  # This expects 'certificates' in Event
-    user = relationship("User")
+    event = relationship("Event", back_populates="e_certificates")  # Updated to match Event
+    user = relationship("User", back_populates="e_certificates")
 
 class User(Base):
     __tablename__ = "users"
-
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, index=True)
     password = Column(String(255))
@@ -35,14 +34,12 @@ class User(Base):
     year = Column(year_enum, nullable=True)
     block = Column(String(50))
     last_active = Column(DateTime, default=datetime.datetime.utcnow)
-    
     events_joined = relationship("Event", secondary=event_participants, back_populates="participants")
     clearance = relationship("Clearance", back_populates="user", uselist=False)
     e_certificates = relationship("ECertificate", back_populates="user")
 
 class Clearance(Base):
     __tablename__ = "clearances"
-
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     requirement = Column(Enum("1st Semester Membership", "2nd Semester Membership", name="requirement_type"), nullable=False)
@@ -60,14 +57,12 @@ class Clearance(Base):
 
 class QRCode(Base):
     __tablename__ = "qr_codes"
-
     id = Column(Integer, primary_key=True, index=True)
     gcash = Column(String(255), nullable=True)
     paymaya = Column(String(255), nullable=True)
 
 class Event(Base):
     __tablename__ = "events"
-
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(255), nullable=False)
     description = Column(String(1000))
@@ -77,10 +72,8 @@ class Event(Base):
     archived = Column(Boolean, default=False)
     registration_start = Column(DateTime, default=datetime.datetime.utcnow)
     registration_end = Column(DateTime, nullable=True)
-    
     participants = relationship("User", secondary=event_participants, back_populates="events_joined")
     e_certificates = relationship("ECertificate", back_populates="event")
-    certificates = relationship("ECertificate", back_populates="event")
     
     @property
     def participant_count(self):
@@ -106,7 +99,6 @@ class Event(Base):
 
 class Announcement(Base):
     __tablename__ = "announcements"
-
     id = Column(Integer, primary_key=True)
     title = Column(String(255))
     description = Column(String(1000))
@@ -117,7 +109,6 @@ class Announcement(Base):
 
 class Officer(Base):
     __tablename__ = "officers"
-
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
     password = Column(String(255), nullable=False)
