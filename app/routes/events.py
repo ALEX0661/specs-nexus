@@ -356,9 +356,20 @@ def get_e_certificate(
         logger.error(f"No certificate found for user {user_id} in event {event_id}")
         raise HTTPException(status_code=404, detail="No certificate found for this user and event")
     
-    certificate.event_title = certificate.event.title if certificate.event else "Unknown Event"
+    # Explicitly create a response dictionary to match ECertificateSchema
+    certificate_response = {
+        "id": certificate.id,
+        "user_id": certificate.user_id,
+        "event_id": certificate.event_id,
+        "certificate_url": certificate.certificate_url,
+        "thumbnail_url": certificate.thumbnail_url,
+        "file_name": certificate.file_name,
+        "issued_date": certificate.issued_date,
+        "event_title": certificate.event.title if certificate.event else "Unknown Event"
+    }
+    
     logger.info(f"Fetched certificate for user {user_id} in event {event_id}")
-    return certificate
+    return certificate_response
 
 @router.post("/{event_id}/certificates/{user_id}", response_model=schemas.ECertificateSchema)
 async def upload_e_certificate(
@@ -404,9 +415,19 @@ async def upload_e_certificate(
         existing_certificate.issued_date = datetime.utcnow()
         db.commit()
         db.refresh(existing_certificate)
-        existing_certificate.event_title = event.title
+        # Create response dictionary
+        certificate_response = {
+            "id": existing_certificate.id,
+            "user_id": existing_certificate.user_id,
+            "event_id": existing_certificate.event_id,
+            "certificate_url": existing_certificate.certificate_url,
+            "thumbnail_url": existing_certificate.thumbnail_url,
+            "file_name": existing_certificate.file_name,
+            "issued_date": existing_certificate.issued_date,
+            "event_title": event.title
+        }
         logger.info(f"E-certificate updated for user {user_id} in event {event_id}")
-        return existing_certificate
+        return certificate_response
     else:
         # Create new certificate
         new_certificate = models.ECertificate(
@@ -420,9 +441,19 @@ async def upload_e_certificate(
         db.add(new_certificate)
         db.commit()
         db.refresh(new_certificate)
-        new_certificate.event_title = event.title
+        # Create response dictionary
+        certificate_response = {
+            "id": new_certificate.id,
+            "user_id": new_certificate.user_id,
+            "event_id": new_certificate.event_id,
+            "certificate_url": new_certificate.certificate_url,
+            "thumbnail_url": new_certificate.thumbnail_url,
+            "file_name": new_certificate.file_name,
+            "issued_date": new_certificate.issued_date,
+            "event_title": event.title
+        }
         logger.info(f"E-certificate uploaded for user {user_id} in event {event_id}")
-        return new_certificate
+        return certificate_response
 
 @router.get("/certificates", response_model=List[schemas.ECertificateSchema])
 def get_user_certificates(
