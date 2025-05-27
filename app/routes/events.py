@@ -435,15 +435,22 @@ def get_user_certificates(
     ).all()
     
     for cert in certificates:
-        if cert.event and cert.event.title:
+        if hasattr(cert, 'event') and cert.event and hasattr(cert.event, 'title') and cert.event.title:
             cert.event_title = cert.event.title
         else:
             cert.event_title = "Unknown Event"
             logger.warning(
                 f"Certificate {cert.id} for user {current_user.id} has no valid event title. "
-                f"Event ID: {cert.event_id}, Event exists: {bool(cert.event)}, "
-                f"Event title: {cert.event.title if cert.event else None}"
+                f"Event ID: {cert.event_id}, Event exists: {bool(hasattr(cert, 'event') and cert.event)}, "
+                f"Event title: {cert.event.title if hasattr(cert, 'event') and cert.event else None}"
             )
+    
+    # Debug: Log all certificate data before returning
+    for cert in certificates:
+        logger.debug(f"Certificate {cert.id} data: {{id: {cert.id}, user_id: {cert.user_id}, "
+                     f"event_id: {cert.event_id}, certificate_url: {cert.certificate_url}, "
+                     f"thumbnail_url: {cert.thumbnail_url}, file_name: {cert.file_name}, "
+                     f"issued_date: {cert.issued_date}, event_title: {cert.event_title}}}")
     
     logger.info(f"User {current_user.id} fetched {len(certificates)} e-certificates")
     return certificates
