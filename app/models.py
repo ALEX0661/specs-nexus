@@ -13,16 +13,16 @@ event_participants = Table(
 )
 
 class ECertificate(Base):
-    __tablename__ = "e_certificates"
+    __tablename__ = "certificates"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     event_id = Column(Integer, ForeignKey("events.id"))
-    certificate_url = Column(String)
-    thumbnail_url = Column(String, nullable=True)
-    file_name = Column(String)
+    certificate_url = Column(String(255))
+    thumbnail_url = Column(String(255), nullable=True)  # Updated to include length
+    file_name = Column(String(255))
     issued_date = Column(DateTime)
-    event = relationship("Event", back_populates="e_certificates")  # Updated to match Event
-    user = relationship("User", back_populates="e_certificates")
+    event = relationship("Event", back_populates="certificates")
+    user = relationship("User", back_populates="certificates")
 
 class User(Base):
     __tablename__ = "users"
@@ -36,7 +36,7 @@ class User(Base):
     last_active = Column(DateTime, default=datetime.datetime.utcnow)
     events_joined = relationship("Event", secondary=event_participants, back_populates="participants")
     clearance = relationship("Clearance", back_populates="user", uselist=False)
-    e_certificates = relationship("ECertificate", back_populates="user")
+    certificates = relationship("ECertificate", back_populates="user")
 
 class Clearance(Base):
     __tablename__ = "clearances"
@@ -44,7 +44,7 @@ class Clearance(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     requirement = Column(Enum("1st Semester Membership", "2nd Semester Membership", name="requirement_type"), nullable=False)
     status = Column(Enum("Clear", "Processing", "Not Yet Cleared", name="clearance_status"), default="Not Yet Cleared", nullable=False)
-    payment_status = Column(Enum("Not Paid", "Verifying", "Paid", name="payment_status"), default="Not Paid", nullable=False)  
+    payment_status = Column(Enum("Not Paid", "Verifying", "Paid", name="payment_status"), default="Not Paid", nullable=False)
     receipt_path = Column(String(255), nullable=True)
     amount = Column(Float)
     archived = Column(Boolean, default=False)
@@ -73,12 +73,12 @@ class Event(Base):
     registration_start = Column(DateTime, default=datetime.datetime.utcnow)
     registration_end = Column(DateTime, nullable=True)
     participants = relationship("User", secondary=event_participants, back_populates="events_joined")
-    e_certificates = relationship("ECertificate", back_populates="event")
-    
+    certificates = relationship("ECertificate", back_populates="event")
+
     @property
     def participant_count(self):
         return len(self.participants) if self.participants else 0
-    
+
     @property
     def registration_open(self):
         now = datetime.datetime.utcnow()
@@ -87,7 +87,7 @@ class Event(Base):
         if self.registration_end and now > self.registration_end:
             return False
         return True
-    
+
     @property
     def registration_status(self):
         now = datetime.datetime.utcnow()

@@ -51,7 +51,7 @@ class User(BaseModel):
     block: Optional[str] = None
     last_active: Optional[datetime] = None
     participated_events: Optional[List["EventSchema"]] = None
-    e_certificates: Optional[List[ECertificateSchema]] = None
+    certificates: Optional[List[ECertificateSchema]] = None
 
     class Config:
         from_attributes = True
