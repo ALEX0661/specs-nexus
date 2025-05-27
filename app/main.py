@@ -1,50 +1,45 @@
+# main.py
+
 import logging
 import logging.config
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from app.database import engine, SessionLocal  
-from app import models
-from app.routes import auth, clearance, membership, events, announcements, officers, analytics, chat
-from dotenv import load_dotenv
 import os
 import pathlib
+from dotenv import load_dotenv
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Load environment variables from .env file for local development
+# ─── 1) Load .env before ANYTHING else that reads environment vars ───
 env_path = pathlib.Path(__file__).parent / ".env"
 if not env_path.exists():
     env_path = pathlib.Path(__file__).parent.parent / ".env"
-    if not env_path.exists():
-        logger.warning(f".env file not found at either app/.env or .env; relying on environment variables")
-    else:
-        logger.info(f"Loading .env file from {env_path}")
-        load_dotenv(env_path)
+
+if env_path.exists():
+    logging.basicConfig(level=logging.INFO)
+    logging.getLogger(__name__).info(f"Loading .env from {env_path}")
+    load_dotenv(dotenv_path=env_path)
 else:
-    logger.info(f"Loading .env file from {env_path}")
-    load_dotenv(env_path)
+    logging.basicConfig(level=logging.WARNING)
+    logging.getLogger(__name__).warning(".env not found; expecting system env vars")
 
-# Validate required environment variables
-required_env_vars = ['CF_ACCESS_KEY_ID', 'CF_SECRET_ACCESS_KEY', 'CLOUDFLARE_R2_BUCKET', 'CLOUDFLARE_R2_ENDPOINT', 'DATABASE_URL']
-missing_vars = [var for var in required_env_vars if not os.getenv(var)]
+# ─── 2) Now safe to import modules that use DATABASE_URL ➔ app.database ───
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.database import engine, SessionLocal
+from app import models
+from app.routes import auth, clearance, membership, events, announcements, officers, analytics, chat
 
-# Print environment variables for debugging
-logger.info("Environment variables loaded:")
-for var in required_env_vars:
-    value = os.getenv(var)
-    if var in ['CF_ACCESS_KEY_ID', 'CF_SECRET_ACCESS_KEY']:
-        logger.info(f"{var}: {'[SET]' if value else '[MISSING]'}")
-    else:
-        logger.info(f"{var}: {value if value else '[MISSING]'}")
+# ─── 3) Validate required env vars (optional but recommended) ───
+required_env_vars = [
+    'CF_ACCESS_KEY_ID',
+    'CF_SECRET_ACCESS_KEY',
+    'CLOUDFLARE_R2_BUCKET',
+    'CLOUDFLARE_R2_ENDPOINT',
+    'DATABASE_URL',
+]
+missing = [v for v in required_env_vars if not os.getenv(v)]
+if missing:
+    raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
-if missing_vars:
-    logger.error(f"Missing environment variables: {', '.join(missing_vars)}")
-    raise ValueError(f"Missing environment variables: {', '.join(missing_vars)}")
-
-# Initialize FastAPI app
+# ─── 4) Create and configure FastAPI ───
+logger = logging.getLogger(__name__)
 app = FastAPI(title="SPECS Nexus API")
 
 app.add_middleware(
@@ -55,16 +50,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth.router)
-app.include_router(clearance.router)
-app.include_router(membership.router)
-app.include_router(events.router)
-app.include_router(announcements.router)
-app.include_router(officers.router)
-app.include_router(analytics.router)
-app.include_router(chat.router)
+# ─── 5) Mount your routers ───
+for router in (auth, clearance, membership, events, announcements, officers, analytics, chat):
+    app.include_router(router.router)
 
-# Create database tables
+# ─── 6) Initialize DB ───
 try:
     models.Base.metadata.create_all(bind=engine)
     logger.info("Database tables created successfully")
