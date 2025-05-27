@@ -19,12 +19,25 @@ class UserInfo(BaseModel):
     year: Optional[str] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class UpdateUser(BaseModel):
     full_name: Optional[str] = None
     year: Optional[str] = None
     block: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+class ECertificateSchema(BaseModel):
+    id: int
+    user_id: int
+    event_id: int
+    certificate_url: str
+    thumbnail_url: Optional[str] = None  # Add this field
+    file_name: str
+    issued_date: datetime
+    event_title: str
 
     class Config:
         orm_mode = True
@@ -36,8 +49,9 @@ class User(BaseModel):
     full_name: Optional[str] = None
     year: Optional[str] = None
     block: Optional[str] = None
-    last_active: Optional[datetime] = None  # Added
+    last_active: Optional[datetime] = None
     participated_events: Optional[List["EventSchema"]] = None
+    e_certificates: Optional[List[ECertificateSchema]] = None
 
     class Config:
         from_attributes = True
@@ -47,7 +61,7 @@ class ClearanceSchema(BaseModel):
     status: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class MembershipSchema(BaseModel):
     id: int
@@ -65,7 +79,7 @@ class MembershipSchema(BaseModel):
     approval_date: Optional[datetime] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
         use_enum_values = True
 
 class EventSchema(BaseModel):
@@ -83,7 +97,7 @@ class EventSchema(BaseModel):
     is_participant: Optional[bool] = False
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class AnnouncementSchema(BaseModel):
     id: int
@@ -94,7 +108,7 @@ class AnnouncementSchema(BaseModel):
     date: Optional[datetime] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class OfficerLoginSchema(BaseModel):
     email: EmailStr
@@ -110,7 +124,7 @@ class OfficerSchema(BaseModel):
     position: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class TokenResponse(BaseModel):
     access_token: str

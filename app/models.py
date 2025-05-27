@@ -12,6 +12,18 @@ event_participants = Table(
     Column("user_id", Integer, ForeignKey("users.id"), primary_key=True)
 )
 
+class ECertificate(Base):
+    __tablename__ = "e_certificates"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    event_id = Column(Integer, ForeignKey("events.id"))
+    certificate_url = Column(String)
+    thumbnail_url = Column(String, nullable=True)
+    file_name = Column(String)
+    issued_date = Column(DateTime)
+    event = relationship("Event", back_populates="certificates")  # This expects 'certificates' in Event
+    user = relationship("User")
+
 class User(Base):
     __tablename__ = "users"
 
@@ -26,6 +38,7 @@ class User(Base):
     
     events_joined = relationship("Event", secondary=event_participants, back_populates="participants")
     clearance = relationship("Clearance", back_populates="user", uselist=False)
+    e_certificates = relationship("ECertificate", back_populates="user")
 
 class Clearance(Base):
     __tablename__ = "clearances"
@@ -39,9 +52,9 @@ class Clearance(Base):
     amount = Column(Float)
     archived = Column(Boolean, default=False)
     payment_method = Column(String(50), nullable=True)
-    denial_reason = Column(String(500), nullable=True)  # New field for denial reason
-    payment_date = Column(DateTime, nullable=True)  # New field for payment date
-    approval_date = Column(DateTime, nullable=True)  # New field for approval date
+    denial_reason = Column(String(500), nullable=True)
+    payment_date = Column(DateTime, nullable=True)
+    approval_date = Column(DateTime, nullable=True)
     last_updated = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
     user = relationship("User", back_populates="clearance")
 
@@ -66,6 +79,8 @@ class Event(Base):
     registration_end = Column(DateTime, nullable=True)
     
     participants = relationship("User", secondary=event_participants, back_populates="events_joined")
+    e_certificates = relationship("ECertificate", back_populates="event")
+    certificates = relationship("ECertificate", back_populates="event")
     
     @property
     def participant_count(self):
@@ -73,7 +88,6 @@ class Event(Base):
     
     @property
     def registration_open(self):
-        """Check if registration is currently open"""
         now = datetime.datetime.utcnow()
         if self.registration_start and now < self.registration_start:
             return False
@@ -83,7 +97,6 @@ class Event(Base):
     
     @property
     def registration_status(self):
-        """Return the status of registration"""
         now = datetime.datetime.utcnow()
         if self.registration_start and now < self.registration_start:
             return "not_started"
