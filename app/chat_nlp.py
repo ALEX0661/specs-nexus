@@ -1,10 +1,11 @@
-# chat_nlp.py
 import os
-from huggingface_hub import InferenceClient
+from openai import OpenAI
 from dotenv import load_dotenv
 from app.database import SessionLocal
 from app import models
 import logging
+from functools import lru_cache
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -12,15 +13,17 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-def fetch_events(db):
+# Cache database queries for 5 minutes (300 seconds)
+@lru_cache(maxsize=128)
+def fetch_events_cached(_cache_key: int = int(time.time() // 300)):
     """Fetch all active events from the database with participation status."""
+    db = SessionLocal()
     try:
         events = db.query(models.Event).filter(models.Event.archived == False).all()
         current_user_id = getattr(db.query(models.User).filter_by(id=1).first(), 'id', None)  # Example user ID; adjust dynamically
         return [
             {
                 "title": event.title,
-                "description": event.description,
                 "date": event.date.isoformat(),
                 "location": event.location,
                 "registration_start": event.registration_start.isoformat() if event.registration_start else None,
@@ -29,26 +32,38 @@ def fetch_events(db):
             } for event in events
         ]
     except Exception as e:
+        logger.error(f"Error fetching events: {str(e)}")
         return f"Error fetching events"
+    finally:
+        db.close()
 
-def fetch_announcements(db):
+@lru_cache(maxsize=128)
+def fetch_announcements_cached(_cache_key: int = int(time.time() // 300)):
     """Fetch all active announcements from the database."""
+    db = SessionLocal()
     try:
         announcements = db.query(models.Announcement).filter(models.Announcement.archived == False).all()
         return [
-            {"title": announcement.title, "description": announcement.description, "date": announcement.date.isoformat(), "location": announcement.location}
-            for announcement in announcements
+            {
+                "title": announcement.title,
+                "date": announcement.date.isoformat(),
+                "location": announcement.location
+            } for announcement in announcements
         ]
     except Exception as e:
+        logger.error(f"Error fetching announcements: {str(e)}")
         return f"Error fetching announcements"
+    finally:
+        db.close()
 
-def fetch_clearances(db, user_id):
+@lru_cache(maxsize=128)
+def fetch_clearances_cached(user_id: int, _cache_key: int = int(time.time() // 300)):
     """Fetch clearance details for a user from the database."""
+    db = SessionLocal()
     try:
         clearances = db.query(models.Clearance).filter(models.Clearance.user_id == user_id, models.Clearance.archived == False).all()
         return [
             {
-                "id": clearance.id,
                 "requirement": clearance.requirement,
                 "amount": clearance.amount,
                 "payment_status": clearance.payment_status,
@@ -60,42 +75,49 @@ def fetch_clearances(db, user_id):
             } for clearance in clearances
         ]
     except Exception as e:
+        logger.error(f"Error fetching clearances for user {user_id}: {str(e)}")
         return f"Error fetching clearances"
+    finally:
+        db.close()
 
-def fetch_officers(db):
+@lru_cache(maxsize=128)
+def fetch_officers_cached(_cache_key: int = int(time.time() // 300)):
     """Fetch all active officers from the database."""
+    db = SessionLocal()
     try:
         officers = db.query(models.Officer).filter(models.Officer.archived == False).all()
-        return [{"full_name": officer.full_name, "position": officer.position} for officer in officers]
+        return [
+            {"full_name": officer.full_name, "position": officer.position} for officer in officers
+        ]
     except Exception as e:
+        logger.error(f"Error fetching officers: {str(e)}")
         return f"Error fetching officers"
+    finally:
+        db.close()
 
 def get_chat_response(user_query: str, user_id: int) -> str:
     """
-    Generates a response to a user query using the Hugging Face Inference API.
+    Generates a response to a user query using OpenRouter's Llama 3.3 8B Instruct model.
     Args:
         user_query (str): The user's input query.
         user_id (int): The ID of the user making the query.
     Returns:
         str: The generated response or an error message.
     """
-    api_key = os.getenv("HUGGINGFACE_API_KEY")
-    logger.info(f"Hugging Face API Key loaded: {'Yes' if api_key else 'No'}")
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    logger.info(f"OpenRouter API Key loaded: {'Yes' if api_key else 'No'}")
     if not api_key:
-        raise ValueError("HUGGINGFACE_API_KEY environment variable not set")
+        raise ValueError("OPENROUTER_API_KEY environment variable not set")
 
-    db = SessionLocal()
-    try:
-        events = fetch_events(db)
-        announcements = fetch_announcements(db)
-        clearances = fetch_clearances(db, user_id)
-        officers = fetch_officers(db)
-    finally:
-        db.close()
+    # Fetch data from database (cached)
+    events = fetch_events_cached()
+    announcements = fetch_announcements_cached()
+    clearances = fetch_clearances_cached(user_id)
+    officers = fetch_officers_cached()
 
+    # Format context for the prompt
     events_str = "\n".join([
         f"## {event['title']}\n"
-        f"  - Description: {event['description']}\n"
         f"  - Date: {event['date']}\n"
         f"  - Location: {event['location']}\n"
         f"  - Registration Start: {event['registration_start'] or 'Not specified'}\n"
@@ -106,14 +128,13 @@ def get_chat_response(user_query: str, user_id: int) -> str:
 
     announcements_str = "\n".join([
         f"## {ann['title']}\n"
-        f"  - Description: {ann['description']}\n"
         f"  - Date: {ann['date']}\n"
         f"  - Location: {ann['location']}"
         for ann in announcements
     ]) if isinstance(announcements, list) else str(announcements)
 
     clearances_str = "\n".join([
-        f"## Clearance {c['id']}\n"
+        f"## Clearance\n"
         f"  - Requirement: {c['requirement']}\n"
         f"  - Amount: {c['amount']}\n"
         f"  - Payment Status: {c['payment_status']}\n"
@@ -125,8 +146,12 @@ def get_chat_response(user_query: str, user_id: int) -> str:
         for c in clearances
     ]) if isinstance(clearances, list) else str(clearances)
 
-    officers_str = "\n".join([f"- **{o['full_name']}**: {o['position']}" for o in officers]) if isinstance(officers, list) else str(officers)
+    officers_str = "\n".join([
+        f"- **{o['full_name']}**: {o['position']}"
+        for o in officers
+    ]) if isinstance(officers, list) else str(officers)
 
+    # Construct the full prompt
     full_prompt = (
         "You are SPECS NEXUS Assistance, a helpful chatbot for the SPECS Nexus platform, designed for the Society of Programming Enthusiasts in Computer Science (SPECS) at Gordon College. SPECS is a student organization under the College of Computer Studies (CCS) department, dedicated to fostering learning, innovation, and community involvement in computer science, specifically for the Bachelor of Science in Computer Science (BSCS) program. SPECS Nexus streamlines membership registration, event participation, and announcement updates, helping members stay connected and informed in a user-friendly environment. The platform has five main pages: Dashboard, Profile, Events, Announcements, and Membership. Below are details about each:\n\n"
         "**Dashboard Page**: The central hub where users can view their current requirements and clearance status, including an overview of pending tasks.\n\n"
@@ -151,19 +176,36 @@ def get_chat_response(user_query: str, user_id: int) -> str:
         "Answer:"
     )
 
-    client = InferenceClient(model="mistralai/Mixtral-8x7B-Instruct-v0.1", token=api_key)
+    # Initialize OpenRouter client
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://openrouter.ai/api/v1"
+    )
 
     try:
+        start_time = time.time()
         response = client.chat.completions.create(
+            model="meta-llama/llama-3.3-8b-instruct:free",
             messages=[
                 {"role": "system", "content": full_prompt},
                 {"role": "user", "content": user_query}
             ],
             max_tokens=512,
-            temperature=0.7
+            temperature=0.7,
+            extra_headers={
+                "HTTP-Referer": "https://specs-nexus.gordoncollege.edu",  # Replace with your actual site URL
+                "X-Title": "SPECS Nexus"  # Replace with your actual app name
+            }
         )
-        logger.info("Successfully received response from Hugging Face API")
+        response_time = time.time() - start_time
+        logger.info(f"OpenRouter API response received in {response_time:.2f} seconds, tokens used: input={response.usage.prompt_tokens}, output={response.usage.completion_tokens}")
         return response.choices[0].message.content.strip()
     except Exception as e:
-        logger.error(f"Failed to get response from Hugging Face API")
-        return f"Error: Failed to get response from API"
+        logger.error(f"Failed to get response from OpenRouter API: {str(e)}")
+        if "rate limit" in str(e).lower():
+            return "Error: Rate limit exceeded. Please try again later."
+        elif "quota" in str(e).lower():
+            return "Error: API quota exhausted. Please check your OpenRouter account."
+        elif "no endpoints found" in str(e).lower():
+            return "Error: Invalid model name. Please contact support."
+        return f"Error: Failed to get response from API: {str(e)}"
