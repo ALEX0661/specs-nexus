@@ -16,8 +16,8 @@ if env_path.exists():
     logging.getLogger(__name__).info(f"Loading .env from {env_path}")
     load_dotenv(dotenv_path=env_path)
 else:
-    logging.basicConfig(level=logging.WARNING)
-    logging.getLogger(__name__).warning(".env not found; expecting system env vars")
+    logging.basicConfig(level=logging.INFO)
+    logging.getLogger(__name__).info(".env not found; using system environment variables")
 
 # ─── 2) Now safe to import modules that use DATABASE_URL ➔ app.database ───
 from fastapi import FastAPI
@@ -65,3 +65,9 @@ except Exception as e:
 @app.get("/")
 def home():
     return {"message": "Welcome to SPECS Nexus API"}
+
+# ─── 7) Run with correct port for Railway ───
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
